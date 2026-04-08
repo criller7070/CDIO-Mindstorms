@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+ENV/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Mindstorms/SPIKE Hub files
+.spyderproject
+.spyproject
+*.tmp
+*.log
+.DS_Store
+
+# User-specific config
+*.user
