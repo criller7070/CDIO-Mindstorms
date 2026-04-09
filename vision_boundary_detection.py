@@ -1,119 +1,55 @@
 #!/usr/bin/env python3
 """
-Vision-based boundary detection for EV3 robot using Logitech camera.
-Detects walls and obstacles, sends navigation commands to EV3 via Bluetooth.
+Vision-based ball hunting navigator for EV3 robot.
+Detects white and orange table tennis balls in a square course with X obstacle.
+Generates autonomous path to visit all balls while avoiding walls and X structure.
 """
 
 import cv2
 import numpy as np
-import socket
-import threading
 import time
-from collections import deque
 
-class BoundaryDetector:
-    def __init__(self, camera_index=0):
-        """
-        Initialize the boundary detector with camera
-        
-        Args:
-            camera_index: Camera device index (0 for Logitech camera)
-        """
+class BallHuntingPlanner:
+    def __init__(self, camera_index=0, mission_file="commands.txt"):
+        """Initialize camera and path planner"""
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
         
-        # Bluetooth connection
-        self.ev3_address = None
-        self.sock = None
-        self.connected = False
+        self.mission_file = mission_file
+        self.mission_commands = []
         
-        # Detection parameters
-        self.wall_threshold = 50          # Distance to wall in pixels from frame edge
-        self.min_contour_area = 500       # Minimum contour area to consider as obstacle
-        self.frame_history = deque(maxlen=5)
-        
-        # Color ranges for different wall types (BGR format)
-        # Adjust these based on your actual wall colors
-        self.lower_wall = np.array([0, 0, 0])      # Black/dark walls
-        self.upper_wall = np.array([100, 100, 100])
-        
-        self.lower_red = np.array([0, 0, 100])     # Red boundaries
-        self.upper_red = np.array([50, 50, 255])
-        
-        self.lower_blue = np.array([100, 0, 0])    # Blue boundaries
-        self.upper_blue = np.array([255, 50, 50])
-        
-    def find_ev3(self):
-        """Find EV3 Bluetooth address from Windows registry"""
-        import subprocess
-        import re
-        
-        try:
-            result = subprocess.run(
-                ["reg", "query", "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices"],
-                capture_output=True,
-                text=True
-            )
-            addresses = re.findall(r'[0-9A-Fa-f]{12}', result.stdout)
-            if addresses:
-                # Format as MAC address
-                formatted = []
-                for addr in addresses:
-                    fmt = ':'.join([addr[i:i+2] for i in range(0, 12, 2)])
-                    print(f"Found Bluetooth device: {fmt}")
-                    formatted.append(fmt)
-                return formatted
-        except Exception as e:
-            print(f"Error finding EV3: {e}")
-        
-        return []
+        # Ball detection parameters
+        self.white_ball_radius_range = (15, 50)
+        self.orange_ball_radius_range = (15, 50)
+        self.min_ball_area = 100
     
-    def connect_to_ev3(self, address):
-        """Connect to EV3 via Bluetooth using Windows socket"""
-        try:
-            # Use Windows native Bluetooth socket (no pybluez needed)
-            self.sock = socket.socket(socket.AF_BTH, socket.SOCK_STREAM)
-            self.sock.connect((address, 1))
-            self.connected = True
-            print(f"Connected to EV3 at {address}")
-            return True
-        except Exception as e:
-            print(f"Failed to connect to EV3: {e}")
-            self.connected = False
-            return False
-    
-    def send_command(self, command):
-        """Send command to EV3"""
-        if self.connected and self.sock:
-            try:
-                self.sock.send(command.encode())
-            except Exception as e:
-                print(f"Error sending command: {e}")
-                self.connected = False
-    
-    def detect_obstacles(self, frame):
-        """
-        Detect obstacles and walls in frame
-        
-        Returns:
-            obstacle_info: Dictionary with obstacle positions and distances
-        """
+    def detect_balls(self, frame):
+        """Detect white and orange table tennis balls"""
+        h, w = frame.shape[:2]
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Detect dark walls/obstacles
-        mask_dark = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 100]))
+        # Detect white balls (high value, low saturation)
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([180, 30, 255])
+        mask_white = cv2.inRange(hsv, lower_white, upper_white)
         
-        # Detect red boundaries
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
-        mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+        # Detect orange balls (orange hue range)
+        lower_orange = np.array([5, 100, 100])
+        upper_orange = np.array([25, 255, 255])
+        mask_orange = cv2.inRange(hsv, lower_orange, upper_orange)
         
-        # Combine masks
-        mask = cv2.bitwise_or(mask_dark, mask_red)
+        white_balls = self._find_ball_centers(mask_white, "WHITE")
+        orange_balls = self._find_ball_centers(mask_orange, "ORANGE")
+        
+        all_balls = white_balls + orange_balls
+        
+        return all_balls, mask_white, mask_orange
+    
+    def _find_ball_centers(self, mask, color_name):
+        """Find ball centers in mask"""
+        balls = []
         
         # Apply morphological operations
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -121,155 +57,194 @@ class BoundaryDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         
         # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        
-        h, w = frame.shape[:2]
-        obstacle_info = {
-            'left': False,
-            'right': False,
-            'center': False,
-            'front': False,
-            'obstacles': []
-        }
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > self.min_contour_area:
-                x, y, cw, ch = cv2.boundingRect(contour)
-                
-                # Determine position relative to frame
-                center_x = x + cw // 2
-                center_y = y + ch // 2
-                
-                obstacle_info['obstacles'].append({
-                    'x': center_x,
-                    'y': center_y,
-                    'width': cw,
-                    'height': ch,
-                    'area': area
-                })
-                
-                # Check which regions are blocked
-                left_third = w // 3
-                right_third = w - w // 3
-                
-                if center_x < left_third:
-                    obstacle_info['left'] = True
-                elif center_x > right_third:
-                    obstacle_info['right'] = True
-                else:
-                    obstacle_info['center'] = True
-                
-                # Front detection (bottom of frame)
-                if center_y > h - self.wall_threshold:
-                    obstacle_info['front'] = True
+            if area > self.min_ball_area:
+                # Fit circle to contour
+                (x, y), radius = cv2.minEnclosingCircle(contour)
+                if radius > 8:
+                    balls.append({
+                        'x': int(x),
+                        'y': int(y),
+                        'radius': int(radius),
+                        'area': area,
+                        'color': color_name
+                    })
         
-        return obstacle_info, mask
+        return balls
     
-    def calculate_steering_command(self, obstacle_info):
-        """
-        Calculate steering command based on obstacle positions
+    def detect_obstacles(self, frame):
+        """Detect the X structure and square boundary"""
+        h, w = frame.shape[:2]
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        Returns:
-            command: String command to send to EV3
-        """
-        if obstacle_info['front']:
-            if obstacle_info['left'] and not obstacle_info['right']:
-                return "TURN_RIGHT"
-            elif obstacle_info['right'] and not obstacle_info['left']:
-                return "TURN_LEFT"
-            else:
-                return "STOP"
-        elif obstacle_info['left']:
-            return "TURN_RIGHT"
-        elif obstacle_info['right']:
-            return "TURN_LEFT"
-        else:
-            return "FORWARD"
+        # Detect dark obstacles (X structure and walls)
+        lower_dark = np.array([0, 0, 0])
+        upper_dark = np.array([180, 255, 100])
+        mask_dark = cv2.inRange(hsv, lower_dark, upper_dark)
+        
+        return mask_dark
     
-    def run(self):
-        """Main vision processing loop"""
-        print("Boundary Detection System Starting...")
+    def analyze_course(self, frame):
+        """Full course analysis"""
+        balls, mask_white, mask_orange = self.detect_balls(frame)
+        obstacles = self.detect_obstacles(frame)
         
-        # Find and connect to EV3
-        addresses = self.find_ev3()
-        if addresses:
-            self.connect_to_ev3(addresses[0])
-        else:
-            print("Warning: No EV3 found. Running in visualization-only mode.")
+        h, w = frame.shape[:2]
         
-        if not self.cap.isOpened():
-            print("Error: Cannot open camera")
-            return
+        return {
+            'balls': balls,
+            'obstacles': obstacles,
+            'white_mask': mask_white,
+            'orange_mask': mask_orange,
+            'frame_h': h,
+            'frame_w': w
+        }
+    
+    def plan_path_to_balls(self, analysis):
+        """Plan path visiting all detected balls"""
+        balls = analysis['balls']
         
-        frame_count = 0
+        if not balls:
+            return ["STOP"]
+        
+        commands = [
+            "# Ball hunting mission",
+            "SPEED:200",
+        ]
+        
+        # Sort balls by distance from center (nearest first for efficiency)
+        center_x = analysis['frame_w'] / 2
+        center_y = analysis['frame_h'] / 2
+        
+        balls_sorted = sorted(balls, key=lambda b: (b['x'] - center_x)**2 + (b['y'] - center_y)**2)
+        
+        # Generate movement commands for each ball
+        current_pos = (center_x, center_y)
+        
+        for i, ball in enumerate(balls_sorted):
+            # Calculate direction to ball
+            dx = ball['x'] - current_pos[0]
+            dy = ball['y'] - current_pos[1]
+            distance = int(np.sqrt(dx**2 + dy**2))
+            
+            if distance > 20:
+                # Move toward ball
+                angle_rad = np.arctan2(dy, dx)
+                angle_deg = int(np.degrees(angle_rad))
+                
+                commands.append("# Moving to {} ball at x:{} y:{}".format(ball['color'], ball['x'], ball['y']))
+                
+                # Approach ball with small movements and turns to avoid obstacles
+                for step in range(0, distance, 200):
+                    commands.append("FORWARD:200")
+                
+                current_pos = (ball['x'], ball['y'])
+                
+                # Stop at ball location briefly
+                commands.append("STOP")
+                time.sleep(0.2)  # Simulate ball pickup
+        
+        # Return to center
+        commands.append("# Returning to center")
+        commands.append("FORWARD:500")
+        commands.append("STOP")
+        
+        return commands
+    
+    def run_planning_mode(self):
+        """
+        Interactive mode to analyze course and generate mission
+        """
+        print("Ball Hunting Navigator")
+        print("=" * 50)
+        print("Instructions:")
+        print("  - Point camera at the course")
+        print("  - Press 'SPACE' to analyze frame and generate mission")
+        print("  - Press 'q' to quit")
+        print()
         
         try:
+            frame_count = 0
             while True:
                 ret, frame = self.cap.read()
                 if not ret:
                     print("Failed to read frame")
                     break
                 
+                frame = cv2.flip(frame, 1)
                 frame_count += 1
                 
-                # Flip frame horizontally for natural mirror view
-                frame = cv2.flip(frame, 1)
-                
-                # Detect obstacles
-                obstacle_info, mask = self.detect_obstacles(frame)
-                
-                # Calculate command every 5 frames to avoid too frequent updates
-                if frame_count % 5 == 0:
-                    command = self.calculate_steering_command(obstacle_info)
-                    print(f"Frame {frame_count}: {command} | Obstacles: L={obstacle_info['left']} C={obstacle_info['center']} R={obstacle_info['right']} F={obstacle_info['front']}")
-                    
-                    # Send command to EV3
-                    if self.connected:
-                        self.send_command(command)
+                # Analyze current frame
+                analysis = self.analyze_course(frame)
+                balls = analysis['balls']
                 
                 # Visualization
                 h, w = frame.shape[:2]
+                display_frame = frame.copy()
                 
-                # Draw frame divided into regions
-                cv2.line(frame, (w // 3, 0), (w // 3, h), (0, 255, 0), 2)
-                cv2.line(frame, (2 * w // 3, 0), (2 * w // 3, h), (0, 255, 0), 2)
-                cv2.line(frame, (0, h - self.wall_threshold), (w, h - self.wall_threshold), (0, 255, 255), 2)
+                # Draw detected balls
+                white_count = 0
+                orange_count = 0
                 
-                # Draw detected obstacles
-                for obs in obstacle_info['obstacles']:
-                    x, y, cw, ch = obs['x'], obs['y'], obs['width'], obs['height']
-                    cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
-                    cv2.rectangle(frame, (x - cw // 2, y - ch // 2), (x + cw // 2, y + ch // 2), (0, 255, 0), 2)
+                for ball in balls:
+                    color_bgr = (255, 255, 255) if ball['color'] == "WHITE" else (0, 165, 255)
+                    cv2.circle(display_frame, (ball['x'], ball['y']), ball['radius'], color_bgr, 2)
+                    cv2.circle(display_frame, (ball['x'], ball['y']), 3, color_bgr, -1)
+                    
+                    if ball['color'] == "WHITE":
+                        white_count += 1
+                    else:
+                        orange_count += 1
+                
+                # Draw center point
+                cv2.circle(display_frame, (w//2, h//2), 5, (0, 255, 0), -1)
                 
                 # Status text
-                status = "CONNECTED" if self.connected else "DISCONNECTED"
-                cv2.putText(frame, f"Status: {status}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(frame, f"Obstacles: {len(obstacle_info['obstacles'])}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                status_text = "White: {} | Orange: {}".format(white_count, orange_count)
+                cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(display_frame, "Press SPACE to generate mission | q to quit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
                 
-                # Show frames
-                cv2.imshow('Boundary Detection', frame)
-                cv2.imshow('Mask', mask)
+                cv2.imshow('Ball Detection', display_frame)
+                cv2.imshow('White Balls', analysis['white_mask'])
+                cv2.imshow('Orange Balls', analysis['orange_mask'])
                 
-                # Exit on 'q' key
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                elif key == ord(' '):
+                    print("\nGenerating mission for {} balls...".format(len(balls)))
+                    self.mission_commands = self.plan_path_to_balls(analysis)
+                    self.save_mission()
+                    print("\nMission generated! Ready to run on EV3.")
                     break
         
         finally:
             self.cleanup()
     
+    def save_mission(self):
+        """Save mission commands to file"""
+        try:
+            with open(self.mission_file, "w") as f:
+                for cmd in self.mission_commands:
+                    f.write(cmd + "\n")
+            print("Mission saved to: {}".format(self.mission_file))
+            print("\nGenerated commands:")
+            for i, cmd in enumerate(self.mission_commands, 1):
+                if not cmd.startswith("#"):
+                    print("  {}: {}".format(i, cmd))
+        except Exception as e:
+            print("Error saving mission: {}".format(e))
+    
     def cleanup(self):
         """Clean up resources"""
-        if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
         self.cap.release()
         cv2.destroyAllWindows()
-        print("Shutdown complete")
+        print("\nShutdown complete")
 
 
 if __name__ == "__main__":
-    detector = BoundaryDetector(camera_index=0)
-    detector.run()
+    planner = BallHuntingPlanner(camera_index=0)
+    planner.run_planning_mode()

@@ -1,160 +1,141 @@
 #!/usr/bin/env pybricks-micropython
 
 """
-EV3 Bluetooth Command Listener for Vision-Based Navigation
-Receives steering commands from host PC and executes robot movements.
+EV3 Navigation Controller - Autonomous Path Execution
+Reads commands from commands.txt and executes a full mission
+Commands: FORWARD:distance, TURN:angle, REVERSE:distance, SPEED:value, STOP
 """
 
 from pybricks.hubs import EV3Brick
 from pybricks.ev3devices import Motor
-from pybricks.parameters import Port
+from pybricks.parameters import Port, Color
 from pybricks.robotics import DriveBase
 import time
 
 class EV3NavController:
     def __init__(self):
-        """Initialize EV3 robot and communication"""
-        # Initialize EV3 Brick
+        """Initialize EV3 robot"""
         self.ev3 = EV3Brick()
-        
-        # Initialize motors
         self.left_motor = Motor(Port.A)
         self.right_motor = Motor(Port.B)
         
-        # Initialize drive base
         self.robot = DriveBase(
             self.left_motor, 
             self.right_motor, 
-            wheel_diameter=55.5,  # Adjust based on your wheel size
-            axle_track=104         # Adjust based on your wheelbase
+            wheel_diameter=55.5,
+            axle_track=104
         )
         
-        # Movement parameters
-        self.forward_speed = 200    # mm/s
-        self.turn_speed = 90        # deg/s
-        self.turn_angle = 45        # degrees to turn
+        self.forward_speed = 200
+        self.turn_speed = 90
         
-        self.ev3.speaker.say("Navigation ready")
+        self.ev3.speaker.say("Ready")
         self.ev3.light.on(Color.GREEN)
     
-    def execute_command(self, command):
-        """Execute movement based on received command"""
-        command = command.strip().upper()
+    def execute_command(self, command_str):
+        """Execute a single command"""
+        command_str = command_str.strip().upper()
         
-        self.ev3.screen.print(f"CMD: {command}")
-        
-        if command == "FORWARD":
-            self.move_forward()
-        
-        elif command == "STOP":
-            self.stop()
-        
-        elif command == "TURN_LEFT":
-            self.turn_left()
-        
-        elif command == "TURN_RIGHT":
-            self.turn_right()
-        
-        elif command == "REVERSE":
-            self.move_backward()
-        
-        elif command.startswith("SPEED"):
-            # Format: SPEED:500 to set speed
-            try:
-                speed = int(command.split(":")[1])
-                self.forward_speed = speed
-                self.ev3.speaker.beep(frequency=1000, duration=100)
-            except:
-                self.ev3.speaker.say("Invalid speed")
-        
-        else:
-            self.ev3.screen.print(f"Unknown: {command}")
-    
-    def move_forward(self):
-        """Move forward at set speed"""
-        self.robot.drive(self.forward_speed, 0)
-    
-    def move_backward(self):
-        """Move backward"""
-        self.robot.drive(-self.forward_speed, 0)
-    
-    def stop(self):
-        """Stop all motors"""
-        self.robot.stop()
-        self.ev3.speaker.beep(frequency=500, duration=200)
-    
-    def turn_left(self):
-        """Turn left"""
-        self.robot.turn(-self.turn_angle)
-        self.ev3.speaker.beep(frequency=800)
-    
-    def turn_right(self):
-        """Turn right"""
-        self.robot.turn(self.turn_angle)
-        self.ev3.speaker.beep(frequency=800)
-    
-    def start_listening(self):
-        """Start listening for Bluetooth commands"""
-        import bluetooth
-        from pybricks.parameters import Color
+        if not command_str or command_str.startswith("#"):
+            return
         
         self.ev3.screen.clear()
-        self.ev3.speaker.say("Starting Bluetooth listener")
+        self.ev3.screen.print("{}".format(command_str[:12]))
+        
+        if ":" in command_str:
+            cmd, value = command_str.split(":", 1)
+            cmd = cmd.strip()
+            try:
+                val = int(value.strip())
+            except:
+                val = 0
+        else:
+            cmd = command_str
+            val = 0
+        
+        if cmd == "FORWARD":
+            if val > 0:
+                self.robot.straight(val)
+            else:
+                self.robot.drive(self.forward_speed, 0)
+        
+        elif cmd == "REVERSE":
+            if val > 0:
+                self.robot.straight(-val)
+            else:
+                self.robot.drive(-self.forward_speed, 0)
+        
+        elif cmd == "TURN":
+            if val != 0:
+                self.robot.turn(val)
+        
+        elif cmd == "TURN_LEFT":
+            self.robot.turn(-45)
+        
+        elif cmd == "TURN_RIGHT":
+            self.robot.turn(45)
+        
+        elif cmd == "STOP":
+            self.robot.stop()
+            self.ev3.speaker.beep(frequency=500, duration=200)
+        
+        elif cmd == "SPEED":
+            self.forward_speed = val if val > 0 else 200
+            self.ev3.speaker.beep(frequency=1000, duration=100)
+        
+        else:
+            self.ev3.screen.print("Unknown: {0}".format(cmd))
+    
+    def execute_mission(self):
+        """Read mission file and execute all commands"""
+        self.ev3.screen.clear()
+        self.ev3.speaker.say("Starting mission")
+        self.ev3.light.on(Color.YELLOW)
         
         try:
-            # Create Bluetooth socket
-            sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            sock.bind(("", bluetooth.PORT_ANY))
-            sock.listen(1)
+            commands = []
+            try:
+                with open("/home/robot/CDIO-Mindstorms/commands.txt", "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            commands.append(line)
+            except OSError:
+                self.ev3.screen.clear()
+                self.ev3.screen.print("No mission file!")
+                self.ev3.speaker.say("Error")
+                self.ev3.light.on(Color.RED)
+                return
             
-            self.ev3.screen.print("Waiting for connection...")
-            self.ev3.light.on(Color.YELLOW)
+            if not commands:
+                self.ev3.screen.clear()
+                self.ev3.screen.print("Empty mission!")
+                return
             
-            # Accept incoming connection
-            client_sock, client_info = sock.accept()
-            
-            self.ev3.screen.print("Connected!")
             self.ev3.light.on(Color.GREEN)
-            self.ev3.speaker.say("Connected")
+            self.ev3.speaker.say("Mission loaded")
+            time.sleep(2)
             
-            command_count = 0
+            for i, cmd in enumerate(commands):
+                self.ev3.screen.clear()
+                self.ev3.screen.print("Step {0}/{1}".format(i+1, len(commands)))
+                self.ev3.screen.print(cmd[:15])
+                self.execute_command(cmd)
             
-            while True:
-                try:
-                    data = client_sock.recv(1024)
-                    
-                    if not data:
-                        break
-                    
-                    command = data.decode('utf-8').strip()
-                    self.ev3.screen.print(f"#{command_count}: {command[:10]}")
-                    
-                    self.execute_command(command)
-                    command_count += 1
-                
-                except Exception as e:
-                    self.ev3.screen.print(f"Error: {str(e)[:20]}")
-                    break
-        
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Mission complete!")
+            self.ev3.speaker.say("Done")
+            self.ev3.light.on(Color.GREEN)
+
         except Exception as e:
-            self.ev3.screen.print(f"BT Error: {str(e)[:20]}")
-            self.ev3.speaker.say("Bluetooth error")
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Error!")
+            self.ev3.speaker.say("Error")
             self.ev3.light.on(Color.RED)
         
         finally:
-            try:
-                client_sock.close()
-                sock.close()
-            except:
-                pass
-            
             self.robot.stop()
-            self.ev3.screen.print("Disconnected")
-            self.ev3.speaker.say("Disconnected")
 
 
-if __name__ == "__main__":
-    from pybricks.parameters import Color
-    
-    controller = EV3NavController()
-    controller.start_listening()
+controller = EV3NavController()
+controller.execute_mission()
