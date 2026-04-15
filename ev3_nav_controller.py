@@ -20,6 +20,14 @@ class EV3NavController:
         self.ev3.screen.clear()
         self.ev3.screen.print("Init...")
         
+        # Queue for voice commands (run one at a time)
+        self.voice_queue = []
+        self.voice_speaking = False
+        
+        # Spinning control
+        self.spinning = False
+        self.spin_speed = 300
+        
         # Test Port A
         try:
             self.left_motor = Motor(Port.A)
@@ -220,10 +228,16 @@ class EV3NavController:
             elif cmd == "SAY":
                 if value:
                     self._log("SAY: {}".format(value[:15]))
-                    # Run voice in background thread so it doesn't block next command
+                    # Queue voice command to run in background
                     def speak_async():
-                        self.ev3.speaker.say(value)
+                        self.voice_speaking = True
+                        try:
+                            self.ev3.speaker.say(value)
+                        except:
+                            pass
+                        self.voice_speaking = False
                     thread = threading.Thread(target=speak_async)
+                    thread.daemon = True
                     thread.start()
                     self.commands_executed += 1
                     return True
@@ -231,6 +245,38 @@ class EV3NavController:
                     self._log("No text to say")
                     self.commands_failed += 1
                     return False
+            
+            elif cmd == "SPIN_START":
+                self._log("SPINNING!")
+                self.spinning = True
+                def spin_forever():
+                    while self.spinning:
+                        try:
+                            if self.robot:
+                                self.robot.turn(360)
+                            else:
+                                # Tank spin: both motors opposite directions
+                                self.left_motor.run_angle(self.spin_speed, 360, wait=False)
+                                self.right_motor.run_angle(-self.spin_speed, 360, wait=True)
+                        except:
+                            pass
+                        time.sleep(0.1)
+                thread = threading.Thread(target=spin_forever)
+                thread.daemon = True
+                thread.start()
+                self.commands_executed += 1
+                return True
+            
+            elif cmd == "SPIN_STOP":
+                self._log("SPIN STOP")
+                self.spinning = False
+                if self.robot:
+                    self.robot.stop()
+                else:
+                    self.left_motor.stop()
+                    self.right_motor.stop()
+                self.commands_executed += 1
+                return True
             
             elif cmd == "LIFT_UP":
                 if self.lift_motor:
