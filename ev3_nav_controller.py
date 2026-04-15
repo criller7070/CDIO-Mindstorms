@@ -39,6 +39,14 @@ class EV3NavController:
             print("[ERROR] Port B: {}".format(str(e)))
             raise
         
+        # Test Port C (Lifting mechanism)
+        try:
+            self.lift_motor = Motor(Port.C)
+            print("[OK] Port C lift motor found")
+        except Exception as e:
+            self.lift_motor = None
+            print("[DEBUG] Port C lift motor not found, skipping lift commands")
+        
         # Try DriveBase with minimal parameters
         try:
             self.robot = DriveBase(
@@ -67,6 +75,7 @@ class EV3NavController:
         
         self.forward_speed = 200
         self.turn_speed = 90
+        self.lift_speed = 150
         
         self.commands_executed = 0
         self.commands_failed = 0
@@ -124,12 +133,10 @@ class EV3NavController:
                     if self.robot:
                         self.robot.straight(value)
                     else:
-                        # Fallback: drive motors for distance
-                        # Estimate: rotations = distance / wheel_circumference
-                        # wheel_circumference ~= 174mm (diameter 55mm)
+                        # Fallback: drive both motors in parallel
                         rotations = (value * 360) // 174
-                        self.left_motor.run_angle(self.forward_speed, rotations)
-                        self.right_motor.run_angle(self.forward_speed, rotations)
+                        self.left_motor.run_angle(-self.forward_speed, rotations, wait=False)
+                        self.right_motor.run_angle(-self.forward_speed, rotations, wait=True)
                     self.commands_executed += 1
                     cmd_time = time.time() - cmd_start_time
                     self._log("OK ({:.1f}s)".format(cmd_time))
@@ -144,10 +151,10 @@ class EV3NavController:
                     if self.robot:
                         self.robot.straight(-value)
                     else:
-                        # Fallback: reverse motors
+                        # Fallback: reverse both motors in parallel
                         rotations = (value * 360) // 174
-                        self.left_motor.run_angle(-self.forward_speed, rotations)
-                        self.right_motor.run_angle(-self.forward_speed, rotations)
+                        self.left_motor.run_angle(self.forward_speed, rotations, wait=False)
+                        self.right_motor.run_angle(self.forward_speed, rotations, wait=True)
                     self.commands_executed += 1
                     cmd_time = time.time() - cmd_start_time
                     self._log("OK ({:.1f}s)".format(cmd_time))
@@ -203,6 +210,40 @@ class EV3NavController:
                 self.ev3.speaker.beep(frequency=500, duration=200)
                 self.commands_executed += 1
                 return True
+            
+            elif cmd == "LIFT_UP":
+                if self.lift_motor:
+                    if value > 0:
+                        self._log("LIFT UP {} deg".format(value))
+                        self.lift_motor.run_angle(-self.lift_speed, value)
+                        self.commands_executed += 1
+                        cmd_time = time.time() - cmd_start_time
+                        self._log("OK ({:.1f}s)".format(cmd_time))
+                    else:
+                        self._log("Bad angle: {}".format(value))
+                        self.commands_failed += 1
+                        return False
+                else:
+                    self._log("Lift motor N/A")
+                    self.commands_failed += 1
+                    return False
+            
+            elif cmd == "LIFT_DOWN":
+                if self.lift_motor:
+                    if value > 0:
+                        self._log("LIFT DOWN {} deg".format(value))
+                        self.lift_motor.run_angle(self.lift_speed, value)
+                        self.commands_executed += 1
+                        cmd_time = time.time() - cmd_start_time
+                        self._log("OK ({:.1f}s)".format(cmd_time))
+                    else:
+                        self._log("Bad angle: {}".format(value))
+                        self.commands_failed += 1
+                        return False
+                else:
+                    self._log("Lift motor N/A")
+                    self.commands_failed += 1
+                    return False
             
             else:
                 self._log("Unknown: {}".format(cmd))
@@ -315,6 +356,8 @@ class EV3NavController:
             else:
                 self.left_motor.stop()
                 self.right_motor.stop()
+            if self.lift_motor:
+                self.lift_motor.stop()
 
 
 def run_diagnostics():
