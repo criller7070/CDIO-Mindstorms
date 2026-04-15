@@ -169,17 +169,17 @@ class EV3NavController:
                     if self.robot:
                         self.robot.turn(value)
                     else:
-                        # Fallback: tank turn (both motors opposite directions)
+                        # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
                         motor_angle = abs(value) * 4  # Empirical: 1 deg = ~4 motor degrees
                         if value > 0:
                             # Turn right: left forward, right backward
-                            self.left_motor.run_angle(self.turn_speed, motor_angle)
-                            self.right_motor.run_angle(-self.turn_speed, motor_angle)
+                            self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
+                            self.right_motor.run_angle(-self.turn_speed, motor_angle, wait=True)
                         else:
                             # Turn left: left backward, right forward
-                            self.left_motor.run_angle(-self.turn_speed, motor_angle)
-                            self.right_motor.run_angle(self.turn_speed, motor_angle)
+                            self.left_motor.run_angle(-self.turn_speed, motor_angle, wait=False)
+                            self.right_motor.run_angle(self.turn_speed, motor_angle, wait=True)
                     self.commands_executed += 1
                     cmd_time = time.time() - cmd_start_time
                     self._log("OK ({:.1f}s)".format(cmd_time))

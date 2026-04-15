@@ -1,46 +1,39 @@
-# GolfBot Test Mission: Square Route (1m × 1m) + Lift Mechanism
-# Flat, open surface; no obstacles
-# This mission tests all command types and verifies robot returns close to starting point
-# Includes lift mechanism tests (Motor C)
+# GolfBot Continuous Lift Test
+# Tests lifting mechanism (Motor C) going up and down repeatedly
 
 # Set movement speed to 200 mm/s
 SPEED:200
 
-# First side: Move forward 1000 mm (1 meter)
-FORWARD:1000
+# Continuous lift cycles - 120 degrees up and down
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Lift up the mechanism
-LIFT_UP:180
+LIFT_UP:120
+LIFT_DOWN:120
 
-# First corner: Turn right 90 degrees
-TURN:90
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Second side: Move forward 1000 mm
-FORWARD:1000
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Lower the mechanism 
-LIFT_DOWN:180
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Second corner: Turn right 90 degrees
-TURN:90
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Third side: Move forward 1000 mm
-FORWARD:1000
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Lift up again
-LIFT_UP:180
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Third corner: Turn right 90 degrees
-TURN:90
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Fourth side: Move forward 1000 mm (should return to start)
-FORWARD:1000
+LIFT_UP:120
+LIFT_DOWN:120
 
-# Lower the mechanism back down
-LIFT_DOWN:180
-
-# Fourth corner: Turn right 90 degrees (should face original direction)
-TURN:90
-
-# Mission complete - stop the robot
+# Stop
 STOP
