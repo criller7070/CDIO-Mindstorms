@@ -11,6 +11,7 @@ from pybricks.ev3devices import Motor, GyroSensor, ColorSensor
 from pybricks.parameters import Port, Color
 from pybricks.robotics import DriveBase
 import time
+import threading
 
 class EV3NavController:
     def __init__(self):
@@ -116,12 +117,17 @@ class EV3NavController:
             if ":" in command_str:
                 cmd, value_str = command_str.split(":", 1)
                 cmd = cmd.strip()
-                try:
-                    value = int(value_str.strip())
-                except ValueError:
-                    self._log("Bad value: {}".format(value_str))
-                    self.commands_failed += 1
-                    return False
+                value_str = value_str.strip()
+                # For SAY commands, keep value as string; for others, convert to int
+                if cmd == "SAY":
+                    value = value_str
+                else:
+                    try:
+                        value = int(value_str)
+                    except ValueError:
+                        self._log("Bad value: {}".format(value_str))
+                        self.commands_failed += 1
+                        return False
             else:
                 cmd = command_str.strip()
                 value = 0
@@ -210,6 +216,21 @@ class EV3NavController:
                 self.ev3.speaker.beep(frequency=500, duration=200)
                 self.commands_executed += 1
                 return True
+            
+            elif cmd == "SAY":
+                if value:
+                    self._log("SAY: {}".format(value[:15]))
+                    # Run voice in background thread so it doesn't block next command
+                    def speak_async():
+                        self.ev3.speaker.say(value)
+                    thread = threading.Thread(target=speak_async)
+                    thread.start()
+                    self.commands_executed += 1
+                    return True
+                else:
+                    self._log("No text to say")
+                    self.commands_failed += 1
+                    return False
             
             elif cmd == "LIFT_UP":
                 if self.lift_motor:
