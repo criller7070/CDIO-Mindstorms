@@ -1,1 +1,33 @@
+# GolfBot Test Mission: Square Route (1m × 1m)
+# Flat, open surface; no obstacles
+# This mission tests all command types and verifies robot returns close to starting point
+
+# Set movement speed to 200 mm/s
+SPEED:200
+
+# First side: Move forward 1000 mm (1 meter)
+FORWARD:1000
+
+# First corner: Turn right 90 degrees
+TURN:90
+
+# Second side: Move forward 1000 mm
+FORWARD:1000
+
+# Second corner: Turn right 90 degrees
+TURN:90
+
+# Third side: Move forward 1000 mm
+FORWARD:1000
+
+# Third corner: Turn right 90 degrees
+TURN:90
+
+# Fourth side: Move forward 1000 mm (should return to start)
+FORWARD:1000
+
+# Fourth corner: Turn right 90 degrees (should face original direction)
+TURN:90
+
+# Mission complete - stop the robot
 STOP

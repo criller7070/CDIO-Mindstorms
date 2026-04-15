@@ -7,7 +7,7 @@ Commands: FORWARD:distance, TURN:angle, REVERSE:distance, SPEED:value, STOP
 """
 
 from pybricks.hubs import EV3Brick
-from pybricks.ev3devices import Motor
+from pybricks.ev3devices import Motor, GyroSensor, ColorSensor
 from pybricks.parameters import Port, Color
 from pybricks.robotics import DriveBase
 import time
@@ -16,126 +16,384 @@ class EV3NavController:
     def __init__(self):
         """Initialize EV3 robot"""
         self.ev3 = EV3Brick()
-        self.left_motor = Motor(Port.A)
-        self.right_motor = Motor(Port.B)
+        self.ev3.screen.clear()
+        self.ev3.screen.print("Init...")
         
-        self.robot = DriveBase(
-            self.left_motor, 
-            self.right_motor, 
-            wheel_diameter=55.5,
-            axle_track=104
-        )
+        # Test Port A
+        try:
+            self.left_motor = Motor(Port.A)
+            print("[OK] Port A motor found")
+        except Exception as e:
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Port A Failed")
+            print("[ERROR] Port A: {}".format(str(e)))
+            raise
+        
+        # Test Port B
+        try:
+            self.right_motor = Motor(Port.B)
+            print("[OK] Port B motor found")
+        except Exception as e:
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Port B Failed")
+            print("[ERROR] Port B: {}".format(str(e)))
+            raise
+        
+        # Try DriveBase with minimal parameters
+        try:
+            self.robot = DriveBase(
+                self.left_motor, 
+                self.right_motor, 
+                wheel_diameter=55,
+                axle_track=104
+            )
+            print("[OK] DriveBase initialized")
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Ready")
+        except Exception as e:
+            print("[ERROR] DriveBase failed: {}".format(str(e)))
+            print("Trying without gyro...")
+            # Fallback: use motors directly without DriveBase
+            self.robot = None
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Motor Mode")
+        
+        # Try to initialize gyro sensor for accurate turning (Port 4)
+        try:
+            self.gyro = GyroSensor(Port.S4)
+        except Exception as e:
+            self.gyro = None
+            print("[DEBUG] Gyro sensor not found or failed; using default turning")
         
         self.forward_speed = 200
         self.turn_speed = 90
         
+        self.commands_executed = 0
+        self.commands_failed = 0
+        self.mission_start_time = None
+        self.last_command_time = None
+        
+        self._log("Motor initialization complete")
         self.ev3.speaker.say("Ready")
         self.ev3.light.on(Color.GREEN)
     
+    def _log(self, message):
+        """Log message with timestamp to EV3 screen and console"""
+        current_time = time.time()
+        
+        # Format for screen (limited space)
+        self.ev3.screen.clear()
+        self.ev3.screen.print(message[:20])
+        
+        # Console output for debugging
+        print("[EV3] {}".format(message))
+    
     def execute_command(self, command_str):
-        """Execute a single command"""
+        """Execute a single command and log execution timing"""
         command_str = command_str.strip().upper()
         
+        # Skip empty lines and comments
         if not command_str or command_str.startswith("#"):
-            return
+            return True
+        
+        cmd_start_time = time.time()
+        command_display = command_str[:20]  # Truncate for display
         
         self.ev3.screen.clear()
-        self.ev3.screen.print("{}".format(command_str[:12]))
+        self.ev3.screen.print("Cmd: {}".format(command_display))
         
-        if ":" in command_str:
-            cmd, value = command_str.split(":", 1)
-            cmd = cmd.strip()
-            try:
-                val = int(value.strip())
-            except:
-                val = 0
-        else:
-            cmd = command_str
-            val = 0
-        
-        if cmd == "FORWARD":
-            if val > 0:
-                self.robot.straight(val)
+        try:
+            # Parse command format: "TYPE:parameter"
+            if ":" in command_str:
+                cmd, value_str = command_str.split(":", 1)
+                cmd = cmd.strip()
+                try:
+                    value = int(value_str.strip())
+                except ValueError:
+                    self._log("Bad value: {}".format(value_str))
+                    self.commands_failed += 1
+                    return False
             else:
-                self.robot.drive(self.forward_speed, 0)
-        
-        elif cmd == "REVERSE":
-            if val > 0:
-                self.robot.straight(-val)
+                cmd = command_str.strip()
+                value = 0
+            
+            # Execute command based on type
+            if cmd == "FORWARD":
+                if value > 0:
+                    self._log("FWD {} mm".format(value))
+                    if self.robot:
+                        self.robot.straight(value)
+                    else:
+                        # Fallback: drive motors for distance
+                        # Estimate: rotations = distance / wheel_circumference
+                        # wheel_circumference ~= 174mm (diameter 55mm)
+                        rotations = (value * 360) // 174
+                        self.left_motor.run_angle(self.forward_speed, rotations)
+                        self.right_motor.run_angle(self.forward_speed, rotations)
+                    self.commands_executed += 1
+                    cmd_time = time.time() - cmd_start_time
+                    self._log("OK ({:.1f}s)".format(cmd_time))
+                else:
+                    self._log("Bad distance: {}".format(value))
+                    self.commands_failed += 1
+                    return False
+            
+            elif cmd == "REVERSE":
+                if value > 0:
+                    self._log("REV {} mm".format(value))
+                    if self.robot:
+                        self.robot.straight(-value)
+                    else:
+                        # Fallback: reverse motors
+                        rotations = (value * 360) // 174
+                        self.left_motor.run_angle(-self.forward_speed, rotations)
+                        self.right_motor.run_angle(-self.forward_speed, rotations)
+                    self.commands_executed += 1
+                    cmd_time = time.time() - cmd_start_time
+                    self._log("OK ({:.1f}s)".format(cmd_time))
+                else:
+                    self._log("Bad distance: {}".format(value))
+                    self.commands_failed += 1
+                    return False
+            
+            elif cmd == "TURN":
+                if value != 0:
+                    self._log("TURN {} deg".format(value))
+                    if self.robot:
+                        self.robot.turn(value)
+                    else:
+                        # Fallback: tank turn (both motors opposite directions)
+                        # For continuous track, rotate both wheels in opposite directions
+                        motor_angle = abs(value) * 4  # Empirical: 1 deg = ~4 motor degrees
+                        if value > 0:
+                            # Turn right: left forward, right backward
+                            self.left_motor.run_angle(self.turn_speed, motor_angle)
+                            self.right_motor.run_angle(-self.turn_speed, motor_angle)
+                        else:
+                            # Turn left: left backward, right forward
+                            self.left_motor.run_angle(-self.turn_speed, motor_angle)
+                            self.right_motor.run_angle(self.turn_speed, motor_angle)
+                    self.commands_executed += 1
+                    cmd_time = time.time() - cmd_start_time
+                    self._log("OK ({:.1f}s)".format(cmd_time))
+                else:
+                    self._log("Bad angle: {}".format(value))
+                    self.commands_failed += 1
+                    return False
+            
+            elif cmd == "SPEED":
+                if value > 0:
+                    self.forward_speed = value
+                    self._log("Speed -> {} mm/s".format(value))
+                    self.ev3.speaker.beep(frequency=1000, duration=100)
+                    self.commands_executed += 1
+                    return True
+                else:
+                    self._log("Bad speed: {}".format(value))
+                    self.commands_failed += 1
+                    return False
+            
+            elif cmd == "STOP":
+                self._log("STOP")
+                if self.robot:
+                    self.robot.stop()
+                else:
+                    self.left_motor.stop()
+                    self.right_motor.stop()
+                self.ev3.speaker.beep(frequency=500, duration=200)
+                self.commands_executed += 1
+                return True
+            
             else:
-                self.robot.drive(-self.forward_speed, 0)
+                self._log("Unknown: {}".format(cmd))
+                self.commands_failed += 1
+                return False
+            
+            return True
         
-        elif cmd == "TURN":
-            if val != 0:
-                self.robot.turn(val)
-        
-        elif cmd == "TURN_LEFT":
-            self.robot.turn(-45)
-        
-        elif cmd == "TURN_RIGHT":
-            self.robot.turn(45)
-        
-        elif cmd == "STOP":
-            self.robot.stop()
-            self.ev3.speaker.beep(frequency=500, duration=200)
-        
-        elif cmd == "SPEED":
-            self.forward_speed = val if val > 0 else 200
-            self.ev3.speaker.beep(frequency=1000, duration=100)
-        
-        else:
-            self.ev3.screen.print("Unknown: {0}".format(cmd))
+        except Exception as e:
+            self._log("Error: {}".format(str(e)[:15]))
+            self.commands_failed += 1
+            return False
     
-    def execute_mission(self):
-        """Read mission file and execute all commands"""
+    
+    def execute_mission(self, mission_file="commands.txt"):
+        """Read mission file and execute all commands in sequence"""
+        self.mission_start_time = time.time()
         self.ev3.screen.clear()
         self.ev3.speaker.say("Starting mission")
         self.ev3.light.on(Color.YELLOW)
         
-        try:
-            commands = []
+        # Try to find mission file in multiple locations
+        possible_paths = [
+            mission_file,
+            "/home/root/{}".format(mission_file),
+            "/home/robot/{}".format(mission_file),
+            "/home/robot/CDIO-Mindstorms/{}".format(mission_file),
+        ]
+        
+        commands = []
+        found_file = None
+        
+        for path in possible_paths:
             try:
-                with open("/home/robot/CDIO-Mindstorms/commands.txt", "r") as f:
-                    for line in f:
+                with open(path, "r") as f:
+                    file_lines = f.readlines()
+                    for line in file_lines:
                         line = line.strip()
                         if line and not line.startswith("#"):
                             commands.append(line)
+                    if commands:
+                        found_file = path
+                        break
             except OSError:
-                self.ev3.screen.clear()
-                self.ev3.screen.print("No mission file!")
-                self.ev3.speaker.say("Error")
-                self.ev3.light.on(Color.RED)
-                return
-            
-            if not commands:
-                self.ev3.screen.clear()
-                self.ev3.screen.print("Empty mission!")
-                return
-            
-            self.ev3.light.on(Color.GREEN)
-            self.ev3.speaker.say("Mission loaded")
-            time.sleep(2)
-            
-            for i, cmd in enumerate(commands):
-                self.ev3.screen.clear()
-                self.ev3.screen.print("Step {0}/{1}".format(i+1, len(commands)))
-                self.ev3.screen.print(cmd[:15])
-                self.execute_command(cmd)
-            
+                continue
+        
+        # Handle file not found
+        if not found_file:
             self.ev3.screen.clear()
-            self.ev3.screen.print("Mission complete!")
+            self.ev3.screen.print("No mission file!")
+            self.ev3.screen.print("Searched: commands.txt")
+            self._log("Mission file not found")
+            self.ev3.speaker.say("Error")
+            self.ev3.light.on(Color.RED)
+            return False
+        
+        # Handle empty mission
+        if not commands:
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Empty mission!")
+            self._log("No commands in file")
+            self.ev3.speaker.say("Error")
+            self.ev3.light.on(Color.RED)
+            return False
+        
+        self.ev3.light.on(Color.GREEN)
+        self._log("Loaded {} cmds".format(len(commands)))
+        self.ev3.speaker.say("Mission loaded")
+        time.sleep(2)
+        
+        # Execute all commands
+        try:
+            for i, cmd in enumerate(commands):
+                progress = "Step {}/{}".format(i + 1, len(commands))
+                self.ev3.screen.clear()
+                self.ev3.screen.print(progress)
+                self.ev3.screen.print(cmd[:20])
+                
+                success = self.execute_command(cmd)
+                
+                if not success and cmd != "STOP":
+                    self._log("Cmd failed!")
+                    time.sleep(1)
+            
+            # Mission complete
+            mission_time = time.time() - self.mission_start_time
+            self.ev3.screen.clear()
+            self.ev3.screen.print("Mission OK!")
+            self.ev3.screen.print("Time: {:.0f}s".format(mission_time))
+            self._log("Mission complete!")
             self.ev3.speaker.say("Done")
             self.ev3.light.on(Color.GREEN)
+            
+            print("[SUMMARY] Executed: {} | Failed: {} | Time: {:.1f}s".format(
+                self.commands_executed, self.commands_failed, mission_time))
+            return True
 
         except Exception as e:
             self.ev3.screen.clear()
-            self.ev3.screen.print("Error!")
+            self.ev3.screen.print("Mission Error!")
+            self._log("Exception: {}".format(str(e)[:15]))
             self.ev3.speaker.say("Error")
             self.ev3.light.on(Color.RED)
+            print("[ERROR] Mission failed: {}".format(str(e)))
+            return False
         
         finally:
-            self.robot.stop()
+            if self.robot:
+                self.robot.stop()
+            else:
+                self.left_motor.stop()
+                self.right_motor.stop()
 
 
-controller = EV3NavController()
-controller.execute_mission()
+def run_diagnostics():
+    """Test which motors are connected"""
+    print("=" * 60)
+    print("GolfBot 9000: Motor Diagnostics")
+    print("=" * 60)
+    
+    ev3 = EV3Brick()
+    ev3.speaker.say("Diagnostics")
+    
+    ports = [("Port.A", Port.A), ("Port.B", Port.B), ("Port.C", Port.C), ("Port.D", Port.D)]
+    
+    print("\nTesting motors on each port...\n")
+    
+    for port_name, port in ports:
+        try:
+            motor = Motor(port)
+            print("[FOUND] Motor on {}".format(port_name))
+            ev3.speaker.beep(frequency=1000, duration=100)
+            # Try to move it slightly to confirm
+            motor.run_angle(100, 90, wait=True)
+            motor.reset_angle(0)
+            print("  → Motor responsive (moved 90°)")
+        except Exception as e:
+            print("[NOT FOUND] {} - {}".format(port_name, str(e)[:40]))
+    
+    print("\nSensor ports:\n")
+    sensor_ports = [("Port.S1", Port.S1), ("Port.S2", Port.S2), ("Port.S3", Port.S3), ("Port.S4", Port.S4)]
+    
+    for port_name, port in sensor_ports:
+        try:
+            # Try gyro first (most likely)
+            gyro = GyroSensor(port)
+            print("[FOUND] Gyro Sensor on {}".format(port_name))
+            ev3.speaker.beep(frequency=800, duration=100)
+        except:
+            try:
+                # Try color sensor
+                color = ColorSensor(port)
+                print("[FOUND] Color Sensor on {}".format(port_name))
+                ev3.speaker.beep(frequency=800, duration=100)
+            except:
+                print("[EMPTY] {}".format(port_name))
+    
+    print("\nDiagnostics complete.")
+    print("Expected configuration:")
+    print("  - Large Motor on Port.A (left)")
+    print("  - Large Motor on Port.B (right)")
+    print("  - Optional: Gyro on Port.S4")
+
+
+def main():
+    """Main entry point"""
+    import sys
+    
+    print("\n" + "=" * 60)
+    print("GolfBot 9000: EV3 Navigation Controller")
+    print("=" * 60 + "\n")
+    
+    # Check for diagnostic mode
+    if "--diagnostics" in sys.argv or "--test" in sys.argv:
+        try:
+            run_diagnostics()
+        except Exception as e:
+            print("[ERROR] Diagnostics failed: {}".format(str(e)))
+        return
+    
+    # Normal mission execution
+    try:
+        controller = EV3NavController()
+        controller.execute_mission()
+    except Exception as e:
+        print("[FATAL ERROR] {}".format(str(e)))
+        print("\nIf motors not found:")
+        print("  1. Check motor connections")
+        print("  2. Run with: python3 ev3_nav_controller.py --diagnostics")
+        print("  3. Verify motors are on Ports A and B")
+
+
+if __name__ == "__main__":
+    main()
