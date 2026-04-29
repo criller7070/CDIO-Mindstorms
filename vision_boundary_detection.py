@@ -10,7 +10,7 @@ import numpy as np
 import time
 
 class BallHuntingPlanner:
-    def __init__(self, camera_index=0, mission_file="commands.txt"):
+    def __init__(self, camera_index=1, mission_file="commands.txt"):
         """Initialize camera and path planner"""
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -246,5 +246,5 @@ class BallHuntingPlanner:
 
 
 if __name__ == "__main__":
-    planner = BallHuntingPlanner(camera_index=0)
+    planner = BallHuntingPlanner(camera_index=1)
     planner.run_planning_mode()

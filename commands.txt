@@ -1,32 +1,17 @@
-# GolfBot Spin Test with Lift
-# Robot spins while lifting arm up and down
-
+# Ball hunting mission
 SPEED:200
-
-# Start spinning
-SPIN_START
-
-# Lift while spinning
-LIFT_UP:120
-SAY:Up
-
-LIFT_DOWN:120
-SAY:Down
-
-LIFT_UP:120
-SAY:Up
-
-LIFT_DOWN:120
-SAY:Down
-
-LIFT_UP:120
-SAY:Up
-
-LIFT_DOWN:120
-SAY:Down
-
-# Stop spinning
-SPIN_STOP
-
-SAY:Done
+# Moving to ORANGE ball at x:270 y:116
+FORWARD:200
+STOP
+# Moving to ORANGE ball at x:336 y:101
+FORWARD:200
+STOP
+# Moving to WHITE ball at x:232 y:109
+FORWARD:200
+STOP
+# Moving to WHITE ball at x:294 y:37
+FORWARD:200
+STOP
+# Returning to center
+FORWARD:500
 STOP
