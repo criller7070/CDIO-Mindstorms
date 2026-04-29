@@ -9,8 +9,12 @@ import cv2
 import numpy as np
 import time
 
+# Configuration - easily change these values
+CAMERA_INDEX = 0
+MISSION_FILE = "commands.txt"
+
 class BallHuntingPlanner:
-    def __init__(self, camera_index=1, mission_file="commands.txt"):
+    def __init__(self, camera_index=0, mission_file="commands.txt"):
         """Initialize camera and path planner"""
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -24,6 +28,10 @@ class BallHuntingPlanner:
         self.white_ball_radius_range = (15, 50)
         self.orange_ball_radius_range = (15, 50)
         self.min_ball_area = 100
+        
+        # Red wall detection parameters
+        self.min_red_line_width = 5
+        self.min_red_line_length = 50
     
     def detect_balls(self, frame):
         """Detect white and orange table tennis balls"""
@@ -87,10 +95,46 @@ class BallHuntingPlanner:
         
         return mask_dark
     
+    def detect_red_walls(self, frame):
+        """Detect red walls and X obstacle structure"""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Red color in HSV: Hue wraps around 0/180
+        # Lower red range (0-10)
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        
+        # Upper red range (170-180)
+        lower_red2 = np.array([170, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        
+        # Combine both red ranges
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        # Apply morphological operations to clean up noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
+        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel)
+        
+        # Detect edges to find wall boundaries
+        edges = cv2.Canny(mask_red, 50, 150)
+        
+        # Detect lines in the red areas
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=self.min_red_line_length, maxLineGap=10)
+        
+        return {
+            'mask': mask_red,
+            'edges': edges,
+            'lines': lines
+        }
+    
     def analyze_course(self, frame):
         """Full course analysis"""
         balls, mask_white, mask_orange = self.detect_balls(frame)
         obstacles = self.detect_obstacles(frame)
+        red_walls = self.detect_red_walls(frame)
         
         h, w = frame.shape[:2]
         
@@ -99,6 +143,7 @@ class BallHuntingPlanner:
             'obstacles': obstacles,
             'white_mask': mask_white,
             'orange_mask': mask_orange,
+            'red_walls': red_walls,
             'frame_h': h,
             'frame_w': w
         }
@@ -202,14 +247,25 @@ class BallHuntingPlanner:
                 # Draw center point
                 cv2.circle(display_frame, (w//2, h//2), 5, (0, 255, 0), -1)
                 
+                # Draw detected red walls
+                if analysis['red_walls']['lines'] is not None:
+                    for line in analysis['red_walls']['lines']:
+                        x1, y1, x2, y2 = line[0]
+                        cv2.line(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                
                 # Status text
-                status_text = "White: {} | Orange: {}".format(white_count, orange_count)
+                status_text = "White: {} | Orange: {} | Red walls: {}".format(
+                    white_count, 
+                    orange_count,
+                    len(analysis['red_walls']['lines']) if analysis['red_walls']['lines'] is not None else 0
+                )
                 cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(display_frame, "Press SPACE to generate mission | q to quit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
                 
                 cv2.imshow('Ball Detection', display_frame)
                 cv2.imshow('White Balls', analysis['white_mask'])
                 cv2.imshow('Orange Balls', analysis['orange_mask'])
+                cv2.imshow('Red Walls', analysis['red_walls']['mask'])
                 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
@@ -246,5 +302,5 @@ class BallHuntingPlanner:
 
 
 if __name__ == "__main__":
-    planner = BallHuntingPlanner(camera_index=1)
+    planner = BallHuntingPlanner(camera_index=CAMERA_INDEX, mission_file=MISSION_FILE)
     planner.run_planning_mode()
