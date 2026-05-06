@@ -9,9 +9,25 @@ import cv2
 import numpy as np
 import time
 
+from path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+
 # Configuration - easily change these values
 CAMERA_INDEX = 0
 MISSION_FILE = "commands.txt"
+
+# Wall margin (pixels) and center no-go radius (pixels) for the planner
+WALL_MARGIN = 45
+CENTER_RADIUS = 60
+
+# Robot's initial heading in image-space degrees.
+# -90 = facing toward top of frame (most common starting orientation).
+INITIAL_HEADING_DEG = -90
+
+# Left hole position as a fraction of the field interior (0.0-1.0).
+# (0.05, 0.5) means 5% from left edge, 50% down — adjust to match your course.
+HOLE_FRAC_X = 0.05
+HOLE_FRAC_Y = 0.50
+
 
 class BallHuntingPlanner:
     def __init__(self, camera_index=0, mission_file="commands.txt"):
@@ -130,87 +146,127 @@ class BallHuntingPlanner:
             'lines': lines
         }
     
+    def detect_field_bounds(self, frame):
+        """
+        Return (x_min, y_min, x_max, y_max) pixel bounds of the red field rectangle.
+        Falls back to a margin-inset of the full frame if walls are not detected.
+        """
+        red_info = self.detect_red_walls(frame)
+        mask = red_info['mask']
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            all_pts = np.vstack(contours)
+            x, y, w, h = cv2.boundingRect(all_pts)
+            return (x, y, x + w, y + h)
+
+        # Fallback: use full frame with a small inset
+        fh, fw = frame.shape[:2]
+        inset = 20
+        return (inset, inset, fw - inset, fh - inset)
+
     def analyze_course(self, frame):
         """Full course analysis"""
         balls, mask_white, mask_orange = self.detect_balls(frame)
         obstacles = self.detect_obstacles(frame)
         red_walls = self.detect_red_walls(frame)
-        
+        field_bounds = self.detect_field_bounds(frame)
+
         h, w = frame.shape[:2]
-        
+
         return {
             'balls': balls,
             'obstacles': obstacles,
             'white_mask': mask_white,
             'orange_mask': mask_orange,
             'red_walls': red_walls,
+            'field_bounds': field_bounds,
             'frame_h': h,
-            'frame_w': w
+            'frame_w': w,
         }
-    
-    def plan_path_to_balls(self, analysis):
-        """Plan path visiting all detected balls"""
+
+    def plan_path_to_balls(self, analysis, robot_pos=None, capacity=6):
+        """
+        Plan a capacity-aware multi-trip route to collect all balls and
+        deposit them at the left hole.
+
+        robot_pos: (x, y) pixel position of the robot. If None, uses the
+                   field centre as the starting point.
+        capacity:  maximum balls the robot can carry per trip.
+        """
         balls = analysis['balls']
-        
-        if not balls:
-            return ["STOP"]
-        
-        commands = [
-            "# Ball hunting mission",
-            "SPEED:200",
-        ]
-        
-        # Sort balls by distance from center (nearest first for efficiency)
-        center_x = analysis['frame_w'] / 2
-        center_y = analysis['frame_h'] / 2
-        
-        balls_sorted = sorted(balls, key=lambda b: (b['x'] - center_x)**2 + (b['y'] - center_y)**2)
-        
-        # Generate movement commands for each ball
-        current_pos = (center_x, center_y)
-        
-        for i, ball in enumerate(balls_sorted):
-            # Calculate direction to ball
-            dx = ball['x'] - current_pos[0]
-            dy = ball['y'] - current_pos[1]
-            distance = int(np.sqrt(dx**2 + dy**2))
-            
-            if distance > 20:
-                # Move toward ball
-                angle_rad = np.arctan2(dy, dx)
-                angle_deg = int(np.degrees(angle_rad))
-                
-                commands.append("# Moving to {} ball at x:{} y:{}".format(ball['color'], ball['x'], ball['y']))
-                
-                # Approach ball with small movements and turns to avoid obstacles
-                for step in range(0, distance, 200):
-                    commands.append("FORWARD:200")
-                
-                current_pos = (ball['x'], ball['y'])
-                
-                # Stop at ball location briefly
-                commands.append("STOP")
-                time.sleep(0.2)  # Simulate ball pickup
-        
-        # Return to center
-        commands.append("# Returning to center")
-        commands.append("FORWARD:500")
-        commands.append("STOP")
-        
+        field_bounds = analysis['field_bounds']
+        x_min, y_min, x_max, y_max = field_bounds
+
+        cx = (x_min + x_max) / 2
+        cy = (y_min + y_max) / 2
+
+        if robot_pos is None:
+            robot_pos = (cx, cy)
+
+        hole_x = x_min + (x_max - x_min) * HOLE_FRAC_X
+        hole_y = y_min + (y_max - y_min) * HOLE_FRAC_Y
+        dropoff = (int(hole_x), int(hole_y))
+
+        planner = FieldPlanner(
+            field_bounds=field_bounds,
+            center_pos=(int(cx), int(cy)),
+            wall_margin=WALL_MARGIN,
+            center_radius=CENTER_RADIUS,
+            field_width_mm=FIELD_WIDTH_MM,
+            field_height_mm=FIELD_HEIGHT_MM,
+        )
+
+        ball_positions = [(b['x'], b['y']) for b in balls]
+        print("Planning {} ball(s), capacity {}, hole at {}...".format(
+            len(balls), capacity, dropoff))
+
+        commands = planner.plan_trips(
+            robot_pos=robot_pos,
+            ball_positions=ball_positions,
+            dropoff_pos=dropoff,
+            capacity=capacity,
+            initial_heading_deg=INITIAL_HEADING_DEG,
+        )
+
+        # Store for debug overlay (uses the last trip's segments if available)
+        self._last_planner = planner
+        self._last_ball_positions = ball_positions
+        self._last_dropoff = dropoff
+
         return commands
     
     def run_planning_mode(self):
         """
-        Interactive mode to analyze course and generate mission
+        Interactive mode to analyze course and generate mission.
+
+        Controls:
+          LEFT-CLICK  - set robot starting position
+          SPACE       - generate mission from current frame + robot position
+          D           - show A* debug overlay (after generating a mission)
+          Q           - quit
         """
         print("Ball Hunting Navigator")
         print("=" * 50)
-        print("Instructions:")
-        print("  - Point camera at the course")
-        print("  - Press 'SPACE' to analyze frame and generate mission")
-        print("  - Press 'q' to quit")
+        print("  LEFT-CLICK  : set robot start position")
+        print("  SPACE       : analyse frame and generate mission")
+        print("  D           : show planned path overlay")
+        print("  Q           : quit")
         print()
-        
+
+        robot_pos = None       # set by mouse click
+        last_frame = None      # freeze frame used for planning
+        debug_vis = None       # path overlay image
+
+        def on_mouse(event, x, y, flags, param):
+            nonlocal robot_pos
+            if event == cv2.EVENT_LBUTTONDOWN:
+                robot_pos = (x, y)
+                print("Robot position set to ({}, {})".format(x, y))
+
+        cv2.namedWindow('Ball Detection')
+        cv2.setMouseCallback('Ball Detection', on_mouse)
+
         try:
             frame_count = 0
             while True:
@@ -218,65 +274,80 @@ class BallHuntingPlanner:
                 if not ret:
                     print("Failed to read frame")
                     break
-                
+
                 frame = cv2.flip(frame, 1)
                 frame_count += 1
-                
-                # Analyze current frame
+                last_frame = frame.copy()
+
                 analysis = self.analyze_course(frame)
                 balls = analysis['balls']
-                
-                # Visualization
-                h, w = frame.shape[:2]
+                bounds = analysis['field_bounds']
+
                 display_frame = frame.copy()
-                
-                # Draw detected balls
-                white_count = 0
-                orange_count = 0
-                
+                white_count = orange_count = 0
+
                 for ball in balls:
                     color_bgr = (255, 255, 255) if ball['color'] == "WHITE" else (0, 165, 255)
                     cv2.circle(display_frame, (ball['x'], ball['y']), ball['radius'], color_bgr, 2)
                     cv2.circle(display_frame, (ball['x'], ball['y']), 3, color_bgr, -1)
-                    
-                    if ball['color'] == "WHITE":
-                        white_count += 1
-                    else:
-                        orange_count += 1
-                
-                # Draw center point
-                cv2.circle(display_frame, (w//2, h//2), 5, (0, 255, 0), -1)
-                
-                # Draw detected red walls
-                if analysis['red_walls']['lines'] is not None:
-                    for line in analysis['red_walls']['lines']:
-                        x1, y1, x2, y2 = line[0]
-                        cv2.line(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                
-                # Status text
-                status_text = "White: {} | Orange: {} | Red walls: {}".format(
-                    white_count, 
-                    orange_count,
-                    len(analysis['red_walls']['lines']) if analysis['red_walls']['lines'] is not None else 0
+                    white_count += ball['color'] == "WHITE"
+                    orange_count += ball['color'] == "ORANGE"
+
+                # Draw detected field boundary
+                x0, y0, x1, y1 = bounds
+                cv2.rectangle(display_frame, (x0, y0), (x1, y1), (0, 0, 200), 1)
+
+                # Draw center obstacle zone
+                cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+                cv2.circle(display_frame, (cx, cy), CENTER_RADIUS, (0, 0, 200), 1)
+
+                # Draw left hole
+                hx = int(x0 + (x1 - x0) * HOLE_FRAC_X)
+                hy = int(y0 + (y1 - y0) * HOLE_FRAC_Y)
+                cv2.circle(display_frame, (hx, hy), 10, (255, 0, 0), 2)
+                cv2.putText(display_frame, "HOLE", (hx + 12, hy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1)
+
+                # Draw robot position if set
+                if robot_pos:
+                    cv2.circle(display_frame, robot_pos, 8, (0, 255, 0), -1)
+                    cv2.putText(display_frame, "ROBOT", (robot_pos[0] + 10, robot_pos[1]),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+
+                status = "White:{} Orange:{} | {}".format(
+                    white_count, orange_count,
+                    "Click to set robot pos" if not robot_pos else "SPACE=plan D=debug Q=quit"
                 )
-                cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(display_frame, "Press SPACE to generate mission | q to quit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-                
+                cv2.putText(display_frame, status, (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
                 cv2.imshow('Ball Detection', display_frame)
-                cv2.imshow('White Balls', analysis['white_mask'])
-                cv2.imshow('Orange Balls', analysis['orange_mask'])
-                cv2.imshow('Red Walls', analysis['red_walls']['mask'])
-                
+
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
                 elif key == ord(' '):
-                    print("\nGenerating mission for {} balls...".format(len(balls)))
-                    self.mission_commands = self.plan_path_to_balls(analysis)
+                    if robot_pos is None:
+                        print("Click to set robot position first, then press SPACE.")
+                        continue
+                    analysis = self.analyze_course(last_frame)
+                    print("\nGenerating A* mission for {} balls...".format(len(analysis['balls'])))
+                    self.mission_commands = self.plan_path_to_balls(analysis, robot_pos)
                     self.save_mission()
-                    print("\nMission generated! Ready to run on EV3.")
-                    break
-        
+                    # Build debug overlay if planner data is available
+                    if hasattr(self, '_last_planner'):
+                        debug_vis = self._last_planner.debug_overlay(
+                            last_frame,
+                            self._last_path_segs,
+                            robot_pos,
+                            self._last_ball_positions,
+                            self._last_dropoff,
+                            self._last_ball_order,
+                        )
+                    print("Mission generated. Ready to run on EV3.")
+                elif key == ord('d') and debug_vis is not None:
+                    cv2.imshow('Planned Path', debug_vis)
+
         finally:
             self.cleanup()
     
