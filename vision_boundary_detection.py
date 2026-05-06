@@ -136,14 +136,17 @@ class BallHuntingPlanner:
                 angle_deg = int(np.degrees(angle_rad))
                 
                 commands.append("# Moving to {} ball at x:{} y:{}".format(ball['color'], ball['x'], ball['y']))
-                
-                # Approach ball with small movements and turns to avoid obstacles
+                # Åbn porten før fremkørsel
+                # HER kan du ændre på bevægelsen af gate (fx grader eller kommando)
+                commands.append("GATE_OPEN:90")
+                # Approach ball med små ryk fremad
                 for step in range(0, distance, 200):
                     commands.append("FORWARD:200")
-                
+                # Luk porten efter fremkørsel
+                # HER kan du ændre på bevægelsen af gate (fx grader eller kommando)
+                commands.append("GATE_CLOSE:90")
                 current_pos = (ball['x'], ball['y'])
-                
-                # Stop at ball location briefly
+                # Stop ved bolden kort
                 commands.append("STOP")
                 time.sleep(0.2)  # Simulate ball pickup
         
