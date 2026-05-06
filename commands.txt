@@ -1,17 +1,10 @@
-# Ball hunting mission
+# Test for gate and movement (fixed directions)
 SPEED:200
-# Moving to ORANGE ball at x:270 y:116
-FORWARD:200
+GATE_OPEN:90
+FORWARD:100
 STOP
-# Moving to ORANGE ball at x:336 y:101
-FORWARD:200
+GATE_CLOSE:20
 STOP
-# Moving to WHITE ball at x:232 y:109
-FORWARD:200
-STOP
-# Moving to WHITE ball at x:294 y:37
-FORWARD:200
-STOP
-# Returning to center
-FORWARD:500
+LIFT_UP:180
+SHAKE_LIFT
 STOP

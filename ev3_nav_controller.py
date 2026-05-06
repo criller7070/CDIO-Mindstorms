@@ -55,6 +55,14 @@ class EV3NavController:
         except Exception as e:
             self.lift_motor = None
             print("[DEBUG] Port C lift motor not found, skipping lift commands")
+
+        # Test port D (gate) 
+        try:
+            self.gate_motor = Motor(Port.D)
+            print("[OK] Port D gate motor found")
+        except Exception as e:
+            self.gate_motor = None
+            print("[DEBUG] Port D gate motor not found, skipping gate commands")    
         
         # Try DriveBase with minimal parameters
         try:
@@ -145,7 +153,7 @@ class EV3NavController:
                 if value > 0:
                     self._log("FWD {} mm".format(value))
                     if self.robot:
-                        self.robot.straight(value)
+                        self.robot.straight(-value)
                     else:
                         # Fallback: drive both motors in parallel
                         rotations = (value * 360) // 174
@@ -163,7 +171,7 @@ class EV3NavController:
                 if value > 0:
                     self._log("REV {} mm".format(value))
                     if self.robot:
-                        self.robot.straight(-value)
+                        self.robot.straight(value)
                     else:
                         # Fallback: reverse both motors in parallel
                         rotations = (value * 360) // 174
@@ -311,7 +319,45 @@ class EV3NavController:
                     self._log("Lift motor N/A")
                     self.commands_failed += 1
                     return False
+                
+            elif cmd == "GATE_OPEN":
+                if self.gate_motor:
+                    self._log("GATE OPEN {} deg".format(value))
+                    self.gate_motor.run_angle(-200, value)
+                    self.commands_executed += 1
+                    return True
+                else:
+                    self._log("Gate motor N/A")
+                    self.commands_failed += 1
+                    return False
+
+            elif cmd == "GATE_CLOSE":
+                if self.gate_motor:
+                    self._log("GATE CLOSE {} deg".format(value))
+                    self.gate_motor.run_angle(200, value)
+                    self.commands_executed += 1
+                    return True
+                else:
+                    self._log("Gate motor N/A")
+                    self.commands_failed += 1
+                    return False
             
+            elif cmd == "SHAKE_LIFT":
+                if self.lift_motor:
+                    self._log("SHAKE LIFT")
+                    for _ in range(3):  # Shake 3 times, adjust as needed
+                        self.lift_motor.run_angle(-self.lift_speed, 90)
+                        self.lift_motor.run_angle(self.lift_speed, 90)
+                    self.commands_executed += 1
+                    return True
+                else:
+                    self._log("Lift motor N/A")
+                    self.commands_failed += 1
+                    return False
+
+
+            
+
             else:
                 self._log("Unknown: {}".format(cmd))
                 self.commands_failed += 1
@@ -323,6 +369,7 @@ class EV3NavController:
             self._log("Error: {}".format(str(e)[:15]))
             self.commands_failed += 1
             return False
+        
     
     
     def execute_mission(self, mission_file="commands.txt"):
