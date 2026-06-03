@@ -4,16 +4,21 @@ Vision-based ball hunting navigator for EV3 robot.
 Detects white and orange table tennis balls in a square course with X obstacle.
 Generates autonomous path to visit all balls while avoiding walls and X structure.
 """
-
+import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2
 import numpy as np
 import time
+import glob
+import re
 
 from path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
 # Configuration - easily change these values
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 MISSION_FILE = "commands.txt"
+SCREENSHOT_DIR = "screenshots"
+MASK_DIR = os.path.join(SCREENSHOT_DIR, "masks")
 
 # Wall margin (pixels) and center no-go radius (pixels) for the planner
 WALL_MARGIN = 45
@@ -39,11 +44,16 @@ class BallHuntingPlanner:
         
         self.mission_file = mission_file
         self.mission_commands = []
+
+        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        os.makedirs(MASK_DIR, exist_ok=True)
         
-        # Ball detection parameters
-        self.white_ball_radius_range = (15, 50)
-        self.orange_ball_radius_range = (15, 50)
-        self.min_ball_area = 100
+        # Ball detection parameters (table tennis balls have fixed size)
+        # The balls are small in this camera view, so keep the radius range tight.
+        self.white_ball_radius_range = (7, 16)
+        self.orange_ball_radius_range = (7, 16)
+        self.min_ball_area = 60
+        self.border_margin = 25
         
         # Red wall detection parameters
         self.min_red_line_width = 5
@@ -54,26 +64,50 @@ class BallHuntingPlanner:
         h, w = frame.shape[:2]
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Detect white balls (high value, low saturation)
-        lower_white = np.array([0, 0, 200])
-        upper_white = np.array([180, 30, 255])
+        # Detect white balls (any hue, but very low saturation = nearly white/gray)
+        lower_white = np.array([0, 0, 150])
+        upper_white = np.array([180, 50, 255])
         mask_white = cv2.inRange(hsv, lower_white, upper_white)
         
-        # Detect orange balls (orange hue range)
-        lower_orange = np.array([5, 100, 100])
+        # Detect orange balls. The prior range was too narrow for lighting variation,
+        # so keep the hue centered on orange but broaden saturation/value.
+        lower_orange = np.array([5, 60, 80])
         upper_orange = np.array([25, 255, 255])
         mask_orange = cv2.inRange(hsv, lower_orange, upper_orange)
+
+        # Suppress edge glare from the frame border before contouring.
+        mask_white[:self.border_margin, :] = 0
+        mask_white[-self.border_margin:, :] = 0
+        mask_white[:, :self.border_margin] = 0
+        mask_white[:, -self.border_margin:] = 0
+
+        mask_orange[:self.border_margin, :] = 0
+        mask_orange[-self.border_margin:, :] = 0
+        mask_orange[:, :self.border_margin] = 0
+        mask_orange[:, -self.border_margin:] = 0
         
-        white_balls = self._find_ball_centers(mask_white, "WHITE")
-        orange_balls = self._find_ball_centers(mask_orange, "ORANGE")
+        # Pass the HSV frame into the per-contour checks so we can validate
+        # color consistency inside each detected contour rather than discarding
+        # detections solely by position.
+        white_balls = self._find_ball_centers(mask_white, "WHITE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+        orange_balls = self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+
+        # Build filtered masks that contain only accepted ball detections.
+        filtered_white = np.zeros_like(mask_white)
+        filtered_orange = np.zeros_like(mask_orange)
+        for ball in white_balls:
+            cv2.circle(filtered_white, (ball['x'], ball['y']), ball['radius'], 255, -1)
+        for ball in orange_balls:
+            cv2.circle(filtered_orange, (ball['x'], ball['y']), ball['radius'], 255, -1)
         
         all_balls = white_balls + orange_balls
         
-        return all_balls, mask_white, mask_orange
+        return all_balls, filtered_white, filtered_orange
     
-    def _find_ball_centers(self, mask, color_name):
-        """Find ball centers in mask"""
+    def _find_ball_centers(self, mask, color_name, frame_shape, hsv=None, min_circularity=0.5):
+        """Find ball centers in mask using circularity, size, and border filtering"""
         balls = []
+        frame_h, frame_w = frame_shape
         
         # Apply morphological operations
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -83,19 +117,77 @@ class BallHuntingPlanner:
         # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
+        # Determine which size range to use
+        if color_name == "WHITE":
+            min_radius, max_radius = self.white_ball_radius_range
+        else:  # ORANGE
+            min_radius, max_radius = self.orange_ball_radius_range
+        
         for contour in contours:
             area = cv2.contourArea(contour)
             if area > self.min_ball_area:
                 # Fit circle to contour
                 (x, y), radius = cv2.minEnclosingCircle(contour)
-                if radius > 8:
-                    balls.append({
-                        'x': int(x),
-                        'y': int(y),
-                        'radius': int(radius),
-                        'area': area,
-                        'color': color_name
-                    })
+
+                # Ignore bright blobs that touch the frame edge; these are usually glare.
+                x0, y0, bw, bh = cv2.boundingRect(contour)
+                if (
+                    x0 <= self.border_margin or
+                    y0 <= self.border_margin or
+                    x0 + bw >= frame_w - self.border_margin or
+                    y0 + bh >= frame_h - self.border_margin
+                ):
+                    continue
+                
+                # Check if radius is within ball size range (fixed size balls)
+                if min_radius <= radius <= max_radius:
+                    # Calculate circularity: 4π*area / perimeter²
+                    perimeter = cv2.arcLength(contour, True)
+                    if perimeter > 0:
+                        circularity = (4 * np.pi * area) / (perimeter * perimeter)
+                    else:
+                        circularity = 0
+
+                    circle_area = np.pi * radius * radius
+                    fill_ratio = area / circle_area if circle_area > 0 else 0
+                    hull = cv2.convexHull(contour)
+                    hull_area = cv2.contourArea(hull)
+                    solidity = area / hull_area if hull_area > 0 else 0
+                    
+                    # Only accept if circularity is high enough
+                    # Real balls are compact and fairly full circles; glare tends to be thin or ragged.
+                    if color_name == "ORANGE":
+                        # Validate mean HSV inside the contour to avoid rim/X reflections
+                        if hsv is not None:
+                            contour_mask = np.zeros(mask.shape, dtype=np.uint8)
+                            cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+                            mean_h, mean_s, mean_v, _ = cv2.mean(hsv, mask=contour_mask)
+                            # Hue in OpenCV is 0-179. Orange ~5-25. Require decent saturation/value.
+                            if not (4 <= mean_h <= 28 and mean_s >= 60 and mean_v >= 70):
+                                continue
+                        if circularity >= min_circularity and fill_ratio >= 0.35 and solidity >= 0.75:
+                            balls.append({
+                                'x': int(x),
+                                'y': int(y),
+                                'radius': int(radius),
+                                'area': area,
+                                'color': color_name,
+                                'circularity': circularity,
+                                'fill_ratio': fill_ratio,
+                                'solidity': solidity
+                            })
+                    else:
+                        if circularity >= min_circularity and fill_ratio >= 0.45 and solidity >= 0.85:
+                            balls.append({
+                                'x': int(x),
+                                'y': int(y),
+                                'radius': int(radius),
+                                'area': area,
+                                'color': color_name,
+                                'circularity': circularity,
+                                'fill_ratio': fill_ratio,
+                                'solidity': solidity
+                            })
         
         return balls
     
@@ -115,19 +207,10 @@ class BallHuntingPlanner:
         """Detect red walls and X obstacle structure"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Red color in HSV: Hue wraps around 0/180
-        # Lower red range (0-10)
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        
-        # Upper red range (170-180)
-        lower_red2 = np.array([170, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
-        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        
-        # Combine both red ranges
-        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        # Red color range (sampled from camera)
+        lower_red = np.array([20, 148, 180])
+        upper_red = np.array([75, 188, 222])
+        mask_red = cv2.inRange(hsv, lower_red, upper_red)
         
         # Apply morphological operations to clean up noise
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -244,6 +327,7 @@ class BallHuntingPlanner:
           LEFT-CLICK  - set robot starting position
           SPACE       - generate mission from current frame + robot position
           D           - show A* debug overlay (after generating a mission)
+          S           - take screenshot (saved with unique name)
           Q           - quit
         """
         print("Ball Hunting Navigator")
@@ -251,12 +335,17 @@ class BallHuntingPlanner:
         print("  LEFT-CLICK  : set robot start position")
         print("  SPACE       : analyse frame and generate mission")
         print("  D           : show planned path overlay")
+        print("  S           : take screenshot")
+        print("  M           : toggle mask windows")
         print("  Q           : quit")
+        print("  (Mask windows show color detection - WHITE, ORANGE, RED)")
         print()
 
         robot_pos = None       # set by mouse click
         last_frame = None      # freeze frame used for planning
         debug_vis = None       # path overlay image
+        masks_visible = True   # toggle mask windows on/off
+        screenshot_count = self._get_next_screenshot_number() - 1  # counter for unique screenshot names
 
         def on_mouse(event, x, y, flags, param):
             nonlocal robot_pos
@@ -316,16 +405,31 @@ class BallHuntingPlanner:
 
                 status = "White:{} Orange:{} | {}".format(
                     white_count, orange_count,
-                    "Click to set robot pos" if not robot_pos else "SPACE=plan D=debug Q=quit"
+                    "Click to set robot pos" if not robot_pos else "SPACE=plan D=debug M=masks S=screenshot Q=quit"
                 )
                 cv2.putText(display_frame, status, (10, 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
                 cv2.imshow('Ball Detection', display_frame)
+                
+                # Show color detection masks for debugging (toggle with M key)
+                if masks_visible:
+                    cv2.imshow('WHITE mask', analysis['white_mask'])
+                    cv2.imshow('ORANGE mask', analysis['orange_mask'])
+                    cv2.imshow('RED walls', analysis['red_walls']['mask'])
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
+                elif key == ord('m'):
+                    masks_visible = not masks_visible
+                    if masks_visible:
+                        print("Mask windows enabled")
+                    else:
+                        cv2.destroyWindow('WHITE mask')
+                        cv2.destroyWindow('ORANGE mask')
+                        cv2.destroyWindow('RED walls')
+                        print("Mask windows disabled")
                 elif key == ord(' '):
                     if robot_pos is None:
                         print("Click to set robot position first, then press SPACE.")
@@ -347,6 +451,55 @@ class BallHuntingPlanner:
                     print("Mission generated. Ready to run on EV3.")
                 elif key == ord('d') and debug_vis is not None:
                     cv2.imshow('Planned Path', debug_vis)
+                elif key == ord('s'):
+                    # Increment screenshot counter and create grouped mask folder
+                    screenshot_count += 1
+                    screenshot_base = "screenshot_{:03d}".format(screenshot_count)
+
+                    # Create a mask folder per screenshot for grouped masks
+                    mask_folder_name = "mask_{:03d}".format(screenshot_count)
+                    mask_folder = os.path.join(SCREENSHOT_DIR, mask_folder_name)
+                    os.makedirs(mask_folder, exist_ok=True)
+
+                    # Files are saved only inside the per-screenshot mask folder
+                    screenshot_file = os.path.join(mask_folder, screenshot_base + ".png")
+                    white_mask_file = os.path.join(mask_folder, "white_mask.png")
+                    orange_mask_file = os.path.join(mask_folder, "orange_mask.png")
+                    red_mask_file = os.path.join(mask_folder, "red_mask.png")
+
+                    # Build a composite image: original frame blended with colored mask overlays
+                    # so the saved screenshot shows the masks visually but without UI text.
+                    composite = frame.copy()
+                    # Ensure masks are uint8 single-channel
+                    wmask = analysis['white_mask'] if analysis['white_mask'].dtype == np.uint8 else analysis['white_mask'].astype(np.uint8)
+                    omask = analysis['orange_mask'] if analysis['orange_mask'].dtype == np.uint8 else analysis['orange_mask'].astype(np.uint8)
+                    rmask = analysis['red_walls']['mask'] if analysis['red_walls']['mask'].dtype == np.uint8 else analysis['red_walls']['mask'].astype(np.uint8)
+
+                    overlay = composite.copy()
+                    # White mask -> brightened area (use white color)
+                    overlay[wmask > 0] = (255, 255, 255)
+                    # Orange mask -> orange tint
+                    overlay[omask > 0] = (0, 140, 255)
+                    # Red mask -> red tint
+                    overlay[rmask > 0] = (0, 0, 255)
+
+                    # Blend overlay onto composite with alpha
+                    alpha = 0.45
+                    composite = cv2.addWeighted(overlay, alpha, composite, 1 - alpha, 0)
+
+                    # Save the composite screenshot (frame combined with masks)
+                    cv2.imwrite(screenshot_file, composite)
+
+                    # Save the annotated display (with overlays/UI) inside the mask folder
+                    annotated_in_mask = os.path.join(mask_folder, screenshot_base + "_annotated.png")
+                    cv2.imwrite(annotated_in_mask, display_frame)
+
+                    # Save the masks
+                    cv2.imwrite(white_mask_file, analysis['white_mask'])
+                    cv2.imwrite(orange_mask_file, analysis['orange_mask'])
+                    cv2.imwrite(red_mask_file, analysis['red_walls']['mask'])
+
+                    print("Saved screenshots and masks in folder: {}".format(mask_folder))
 
         finally:
             self.cleanup()
@@ -370,6 +523,23 @@ class BallHuntingPlanner:
         self.cap.release()
         cv2.destroyAllWindows()
         print("\nShutdown complete")
+    
+    def _get_next_screenshot_number(self):
+        """Find the highest existing screenshot number and return the next one"""
+        # Look for existing screenshot files inside mask folders (mask_***/screenshot_***.png)
+        pattern = os.path.join(SCREENSHOT_DIR, "mask_*", "screenshot_*.png")
+        existing = glob.glob(pattern)
+        if not existing:
+            return 1
+
+        # Extract numbers from filenames
+        numbers = []
+        for f in existing:
+            match = re.search(r'screenshot_(\d+)\.png', os.path.basename(f))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        return max(numbers) + 1 if numbers else 1
 
 
 if __name__ == "__main__":

@@ -18,3 +18,6 @@ ENV/
 
 # User-specific config
 *.user
+
+# Generated debug screenshots and masks
+screenshots/
