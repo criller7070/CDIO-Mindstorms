@@ -12,12 +12,12 @@ import time
 import glob
 import re
 
-from path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+from tools_path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
 # Configuration - easily change these values
 CAMERA_INDEX = 1
-MISSION_FILE = "commands.txt"
-SCREENSHOT_DIR = "screenshots"
+MISSION_FILE = os.path.join(os.path.dirname(__file__), "..", "robot", "commands.txt")
+SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 MASK_DIR = os.path.join(SCREENSHOT_DIR, "masks")
 
 # Wall margin (pixels) and center no-go radius (pixels) for the planner

@@ -548,7 +548,7 @@ def main():
         print("[FATAL ERROR] {}".format(str(e)))
         print("\nIf motors not found:")
         print("  1. Check motor connections")
-        print("  2. Run with: python3 ev3_nav_controller.py --diagnostics")
+        print("  2. Run with: python3 main.py --diagnostics")
         print("  3. Verify motors are on Ports A and B")
 
 

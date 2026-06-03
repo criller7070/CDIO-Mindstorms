@@ -3,6 +3,7 @@
 Unit Tests for Navigation Command Parsing
 Tests that commands are parsed correctly and execute without errors
 """
+import os
 
 def test_command_parsing():
     """Test COMMAND:parameter parsing"""
@@ -76,7 +77,7 @@ def test_mission_file_loading():
         commands = []
         
         try:
-            with open("commands.txt", "r") as f:
+            with open(os.path.join(os.path.dirname(__file__), "..", "robot", "commands.txt"), "r") as f:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):

@@ -151,8 +151,8 @@ class HostMissionSender:
         # Try multiple paths
         possible_paths = [
             filename,
-            "./" + filename,
-            "CDIO-Mindstorms/" + filename,
+            os.path.join(os.path.dirname(__file__), "..", "robot", filename),
+            os.path.join(os.path.dirname(__file__), "..", filename),
         ]
         
         for path in possible_paths:
@@ -227,8 +227,8 @@ def main():
         print("This script is designed to run on the HOST PC (Windows/Mac/Linux),")
         print("NOT on the EV3 robot itself.\n")
         print("Correct Setup:")
-        print("  1. On EV3: Run ev3_nav_controller.py as main.py")
-        print("  2. On Host PC: Run this script (host_mission_sender.py)")
+        print("  1. On EV3: Run robot/main.py")
+        print("  2. On Host PC: Run this script (tools/tools_mission_sender.py)")
         print("  3. Host PC will send commands to EV3 via Bluetooth\n")
         return False
     
@@ -242,7 +242,7 @@ def main():
     
     try:
         # Execute mission
-        sender.execute_mission("commands.txt")
+        sender.execute_mission(os.path.join(os.path.dirname(__file__), "..", "robot", "commands.txt"))
     except KeyboardInterrupt:
         print("\n\nMission interrupted by user")
     except Exception as e:

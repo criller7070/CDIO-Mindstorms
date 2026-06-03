@@ -20,4 +20,5 @@ ENV/
 *.user
 
 # Generated debug screenshots and masks
-screenshots/
+screenshots/*
+!screenshots/.gitkeep
