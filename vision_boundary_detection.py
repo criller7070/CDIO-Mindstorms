@@ -290,10 +290,14 @@ class BallHuntingPlanner:
         """Detect red walls and X obstacle structure"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Red color range (sampled from camera)
-        lower_red = np.array([20, 148, 180])
-        upper_red = np.array([75, 188, 222])
-        mask_red = cv2.inRange(hsv, lower_red, upper_red)
+        # Red wraps around the HSV hue axis, so combine low-hue and high-hue bands.
+        lower_red_1 = np.array([0, 80, 70])
+        upper_red_1 = np.array([10, 255, 255])
+        lower_red_2 = np.array([170, 80, 70])
+        upper_red_2 = np.array([179, 255, 255])
+        mask_red_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
+        mask_red_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+        mask_red = cv2.bitwise_or(mask_red_1, mask_red_2)
         
         # Apply morphological operations to clean up noise
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
