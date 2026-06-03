@@ -1,8 +1,6 @@
 # Contributing & Project Structure
 
-## Proposed Directory Layout
-
-The codebase is currently flat. This is the proposed reorganization:
+## File Tree
 
 ```
 CDIO-Mindstorms/
@@ -38,12 +36,6 @@ CDIO-Mindstorms/
 │
 └── README.md
 ```
-
-## PyBricks Flat Structure Constraint
-
-PyBricks officially only supports flat project structures. No subdirectories inside `robot/`. All files in the `robot/` folder get copied to the EV3 as-is when deployed via the LEGO Education IDE or pybricksdev.
-
-Subdirectory imports are undocumented and unreliable — keep `robot/` flat.
 
 ## Switching Missions
 
@@ -83,7 +75,3 @@ python tools_mission_sender.py
 ```
 
 No extra Bluetooth library needed on Windows — uses native AF_BTH socket.
-
-## Branches
-
-Work on feature branches. `main` should always have a working mission file and robot code that can be deployed to the EV3.
