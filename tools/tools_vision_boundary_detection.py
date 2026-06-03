@@ -54,6 +54,10 @@ class BallHuntingPlanner:
         self.orange_ball_radius_range = (7, 16)
         self.min_ball_area = 60
         self.border_margin = 25
+        self.ball_confirm_frames = 4
+        self.ball_miss_frames = 1
+        self.ball_match_distance = 18
+        self._ball_tracks = {"WHITE": [], "ORANGE": []}
         
         # Red wall detection parameters
         self.min_red_line_width = 5
@@ -89,8 +93,11 @@ class BallHuntingPlanner:
         # Pass the HSV frame into the per-contour checks so we can validate
         # color consistency inside each detected contour rather than discarding
         # detections solely by position.
-        white_balls = self._find_ball_centers(mask_white, "WHITE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
-        orange_balls = self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+        white_candidates = self._find_ball_centers(mask_white, "WHITE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+        orange_candidates = self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+
+        white_balls = self._update_stable_ball_tracks(white_candidates, "WHITE")
+        orange_balls = self._update_stable_ball_tracks(orange_candidates, "ORANGE")
 
         # Build filtered masks that contain only accepted ball detections.
         filtered_white = np.zeros_like(mask_white)
@@ -103,6 +110,82 @@ class BallHuntingPlanner:
         all_balls = white_balls + orange_balls
         
         return all_balls, filtered_white, filtered_orange
+
+    def _update_stable_ball_tracks(self, detections, color_name):
+        """Keep only detections that stay consistent across frames."""
+        tracks = self._ball_tracks[color_name]
+        updated_tracks = []
+        matched_track_indices = set()
+
+        for detection in detections:
+            best_index = None
+            best_distance = None
+
+            for index, track in enumerate(tracks):
+                if index in matched_track_indices:
+                    continue
+
+                distance = np.hypot(detection['x'] - track['x'], detection['y'] - track['y'])
+                if distance <= self.ball_match_distance and (best_distance is None or distance < best_distance):
+                    best_index = index
+                    best_distance = distance
+
+            if best_index is not None:
+                track = tracks[best_index].copy()
+                track['x'] = int(round(track['x'] * 0.6 + detection['x'] * 0.4))
+                track['y'] = int(round(track['y'] * 0.6 + detection['y'] * 0.4))
+                track['radius'] = int(round(track['radius'] * 0.6 + detection['radius'] * 0.4))
+                track['area'] = detection['area']
+                track['circularity'] = detection['circularity']
+                track['fill_ratio'] = detection['fill_ratio']
+                track['solidity'] = detection['solidity']
+                track['hits'] += 1
+                track['streak'] = track.get('streak', 0) + 1
+                track['misses'] = 0
+                matched_track_indices.add(best_index)
+                updated_tracks.append(track)
+            else:
+                updated_tracks.append({
+                    'x': detection['x'],
+                    'y': detection['y'],
+                    'radius': detection['radius'],
+                    'area': detection['area'],
+                    'color': color_name,
+                    'circularity': detection['circularity'],
+                    'fill_ratio': detection['fill_ratio'],
+                    'solidity': detection['solidity'],
+                    'hits': 1,
+                    'streak': 1,
+                    'misses': 0,
+                })
+
+        for index, track in enumerate(tracks):
+            if index in matched_track_indices:
+                continue
+
+            track = track.copy()
+            track['misses'] += 1
+            track['streak'] = 0
+            if track['misses'] <= self.ball_miss_frames:
+                updated_tracks.append(track)
+
+        self._ball_tracks[color_name] = updated_tracks
+
+        stable_balls = []
+        for track in updated_tracks:
+            if track['streak'] >= self.ball_confirm_frames and track['misses'] == 0:
+                stable_balls.append({
+                    'x': track['x'],
+                    'y': track['y'],
+                    'radius': track['radius'],
+                    'area': track['area'],
+                    'color': track['color'],
+                    'circularity': track['circularity'],
+                    'fill_ratio': track['fill_ratio'],
+                    'solidity': track['solidity'],
+                })
+
+        return stable_balls
     
     def _find_ball_centers(self, mask, color_name, frame_shape, hsv=None, min_circularity=0.5):
         """Find ball centers in mask using circularity, size, and border filtering"""
@@ -207,10 +290,14 @@ class BallHuntingPlanner:
         """Detect red walls and X obstacle structure"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Red color range (sampled from camera)
-        lower_red = np.array([20, 148, 180])
-        upper_red = np.array([75, 188, 222])
-        mask_red = cv2.inRange(hsv, lower_red, upper_red)
+        # Red wraps around the HSV hue axis, so combine low-hue and high-hue bands.
+        lower_red_1 = np.array([0, 80, 70])
+        upper_red_1 = np.array([10, 255, 255])
+        lower_red_2 = np.array([170, 80, 70])
+        upper_red_2 = np.array([179, 255, 255])
+        mask_red_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
+        mask_red_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+        mask_red = cv2.bitwise_or(mask_red_1, mask_red_2)
         
         # Apply morphological operations to clean up noise
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
