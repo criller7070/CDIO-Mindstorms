@@ -33,6 +33,31 @@ INITIAL_HEADING_DEG = -90
 HOLE_FRAC_X = 0.05
 HOLE_FRAC_Y = 0.50
 
+# Persisted HSV calibration – edit via the in-app calibration tool (press C).
+COLOR_RANGES_FILE = os.path.join(os.path.dirname(__file__), "color_ranges.json")
+
+DEFAULT_COLOR_RANGES = {
+    # Shape gates are OFF by default (0 thresholds, wide radius) so the raw
+    # HSV mask is what drives detection. Tighten in color_ranges.json once
+    # the HSV ranges are correctly calibrated.
+    "WHITE":  {
+        "lower": [0, 0, 175], "upper": [179, 50, 255],
+        "radius_min": 1, "radius_max": 999,
+        "circularity": 0.0, "fill_ratio": 0.0, "solidity": 0.0,
+    },
+    "ORANGE": {
+        "lower": [5, 60, 80], "upper": [25, 255, 255],
+        # Mean-HSV check also off — set mean_h_max=179 to pass everything
+        "mean_h_min": 0, "mean_h_max": 179, "mean_s_min": 0, "mean_v_min": 0,
+        "radius_min": 1, "radius_max": 999,
+        "circularity": 0.0, "fill_ratio": 0.0, "solidity": 0.0,
+    },
+    "RED":    {
+        "lower": [0, 80, 70], "upper": [10, 255, 255],
+        "lower2": [170, 80, 70], "upper2": [179, 255, 255],
+    },
+}
+
 
 class BallHuntingPlanner:
     def __init__(self, camera_index=0, mission_file="commands.txt"):
@@ -50,66 +75,88 @@ class BallHuntingPlanner:
         
         # Ball detection parameters (table tennis balls have fixed size)
         # The balls are small in this camera view, so keep the radius range tight.
-        self.white_ball_radius_range = (7, 16)
-        self.orange_ball_radius_range = (7, 16)
-        self.min_ball_area = 60
-        self.border_margin = 25
-        self.ball_confirm_frames = 4
-        self.ball_miss_frames = 1
+        self.white_ball_radius_range = (1, 999)   # overridden by color_ranges
+        self.orange_ball_radius_range = (1, 999)  # overridden by color_ranges
+        self.min_ball_area = 10
+        self.border_margin = 0
+        self.ball_confirm_frames = 0
+        self.ball_miss_frames = 0
         self.ball_match_distance = 18
         self._ball_tracks = {"WHITE": [], "ORANGE": []}
         
         # Red wall detection parameters
         self.min_red_line_width = 5
         self.min_red_line_length = 50
-    
+
+        # Load persisted HSV calibration (falls back to defaults if no file)
+        self.color_ranges = self._load_color_ranges()
+
+    # ------------------------------------------------------------------
+    # Color-range persistence
+    # ------------------------------------------------------------------
+
+    def _load_color_ranges(self):
+        import json, copy
+        try:
+            with open(COLOR_RANGES_FILE, 'r') as f:
+                saved = json.load(f)
+            # Merge with defaults so any new keys are always present
+            ranges = copy.deepcopy(DEFAULT_COLOR_RANGES)
+            for color, vals in saved.items():
+                if color in ranges:
+                    ranges[color].update(vals)
+            print("Loaded color calibration from: {}".format(COLOR_RANGES_FILE))
+            return ranges
+        except FileNotFoundError:
+            print("No calibration file found – using defaults. Press C to calibrate.")
+            return copy.deepcopy(DEFAULT_COLOR_RANGES)
+
+    def _save_color_ranges(self):
+        import json
+        with open(COLOR_RANGES_FILE, 'w') as f:
+            json.dump(self.color_ranges, f, indent=2)
+        print("Calibration saved to: {}".format(COLOR_RANGES_FILE))
+
     def detect_balls(self, frame):
         """Detect white and orange table tennis balls"""
         h, w = frame.shape[:2]
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Detect white balls (any hue, but very low saturation = nearly white/gray)
-        lower_white = np.array([0, 0, 150])
-        upper_white = np.array([180, 50, 255])
+        # Detect white and orange balls using calibrated HSV ranges
+        cr_w = self.color_ranges['WHITE']
+        lower_white = np.array(cr_w['lower'])
+        upper_white = np.array(cr_w['upper'])
         mask_white = cv2.inRange(hsv, lower_white, upper_white)
-        
-        # Detect orange balls. The prior range was too narrow for lighting variation,
-        # so keep the hue centered on orange but broaden saturation/value.
-        lower_orange = np.array([5, 60, 80])
-        upper_orange = np.array([25, 255, 255])
+
+        cr_o = self.color_ranges['ORANGE']
+        lower_orange = np.array(cr_o['lower'])
+        upper_orange = np.array(cr_o['upper'])
         mask_orange = cv2.inRange(hsv, lower_orange, upper_orange)
 
+        # Save the raw inRange masks — these match what the calibration window shows.
+        raw_white  = mask_white.copy()
+        raw_orange = mask_orange.copy()
+
         # Suppress edge glare from the frame border before contouring.
-        mask_white[:self.border_margin, :] = 0
-        mask_white[-self.border_margin:, :] = 0
-        mask_white[:, :self.border_margin] = 0
-        mask_white[:, -self.border_margin:] = 0
+        if self.border_margin > 0:
+            mask_white[:self.border_margin, :] = 0
+            mask_white[-self.border_margin:, :] = 0
+            mask_white[:, :self.border_margin] = 0
+            mask_white[:, -self.border_margin:] = 0
+            mask_orange[:self.border_margin, :] = 0
+            mask_orange[-self.border_margin:, :] = 0
+            mask_orange[:, :self.border_margin] = 0
+            mask_orange[:, -self.border_margin:] = 0
 
-        mask_orange[:self.border_margin, :] = 0
-        mask_orange[-self.border_margin:, :] = 0
-        mask_orange[:, :self.border_margin] = 0
-        mask_orange[:, -self.border_margin:] = 0
-        
-        # Pass the HSV frame into the per-contour checks so we can validate
-        # color consistency inside each detected contour rather than discarding
-        # detections solely by position.
-        white_candidates = self._find_ball_centers(mask_white, "WHITE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
-        orange_candidates = self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv=hsv, min_circularity=0.45)
+        white_candidates  = self._find_ball_centers(mask_white,  "WHITE",  frame.shape[:2], hsv=hsv, min_circularity=0.0)
+        orange_candidates = self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv=hsv, min_circularity=0.0)
 
-        white_balls = self._update_stable_ball_tracks(white_candidates, "WHITE")
+        white_balls  = self._update_stable_ball_tracks(white_candidates,  "WHITE")
         orange_balls = self._update_stable_ball_tracks(orange_candidates, "ORANGE")
 
-        # Build filtered masks that contain only accepted ball detections.
-        filtered_white = np.zeros_like(mask_white)
-        filtered_orange = np.zeros_like(mask_orange)
-        for ball in white_balls:
-            cv2.circle(filtered_white, (ball['x'], ball['y']), ball['radius'], 255, -1)
-        for ball in orange_balls:
-            cv2.circle(filtered_orange, (ball['x'], ball['y']), ball['radius'], 255, -1)
-        
         all_balls = white_balls + orange_balls
-        
-        return all_balls, filtered_white, filtered_orange
+
+        return all_balls, raw_white, raw_orange
 
     def _update_stable_ball_tracks(self, detections, color_name):
         """Keep only detections that stay consistent across frames."""
@@ -200,77 +247,58 @@ class BallHuntingPlanner:
         # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Determine which size range to use
-        if color_name == "WHITE":
-            min_radius, max_radius = self.white_ball_radius_range
-        else:  # ORANGE
-            min_radius, max_radius = self.orange_ball_radius_range
-        
+        # Pull all thresholds from the calibrated config
+        cr = self.color_ranges[color_name]
+        min_radius  = cr.get('radius_min',  1)
+        max_radius  = cr.get('radius_max',  999)
+        min_circ    = cr.get('circularity', 0.0)
+        min_fill    = cr.get('fill_ratio',  0.0)
+        min_solid   = cr.get('solidity',    0.0)
+
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > self.min_ball_area:
-                # Fit circle to contour
-                (x, y), radius = cv2.minEnclosingCircle(contour)
+            if area < self.min_ball_area:
+                continue
 
-                # Ignore bright blobs that touch the frame edge; these are usually glare.
+            (x, y), radius = cv2.minEnclosingCircle(contour)
+
+            # Optional border-margin guard (border_margin=0 disables it)
+            if self.border_margin > 0:
                 x0, y0, bw, bh = cv2.boundingRect(contour)
-                if (
-                    x0 <= self.border_margin or
-                    y0 <= self.border_margin or
-                    x0 + bw >= frame_w - self.border_margin or
-                    y0 + bh >= frame_h - self.border_margin
-                ):
+                if (x0 <= self.border_margin or y0 <= self.border_margin or
+                        x0 + bw >= frame_w - self.border_margin or
+                        y0 + bh >= frame_h - self.border_margin):
                     continue
-                
-                # Check if radius is within ball size range (fixed size balls)
-                if min_radius <= radius <= max_radius:
-                    # Calculate circularity: 4π*area / perimeter²
-                    perimeter = cv2.arcLength(contour, True)
-                    if perimeter > 0:
-                        circularity = (4 * np.pi * area) / (perimeter * perimeter)
-                    else:
-                        circularity = 0
 
-                    circle_area = np.pi * radius * radius
-                    fill_ratio = area / circle_area if circle_area > 0 else 0
-                    hull = cv2.convexHull(contour)
-                    hull_area = cv2.contourArea(hull)
-                    solidity = area / hull_area if hull_area > 0 else 0
-                    
-                    # Only accept if circularity is high enough
-                    # Real balls are compact and fairly full circles; glare tends to be thin or ragged.
-                    if color_name == "ORANGE":
-                        # Validate mean HSV inside the contour to avoid rim/X reflections
-                        if hsv is not None:
-                            contour_mask = np.zeros(mask.shape, dtype=np.uint8)
-                            cv2.drawContours(contour_mask, [contour], -1, 255, -1)
-                            mean_h, mean_s, mean_v, _ = cv2.mean(hsv, mask=contour_mask)
-                            # Hue in OpenCV is 0-179. Orange ~5-25. Require decent saturation/value.
-                            if not (4 <= mean_h <= 28 and mean_s >= 60 and mean_v >= 70):
-                                continue
-                        if circularity >= min_circularity and fill_ratio >= 0.35 and solidity >= 0.75:
-                            balls.append({
-                                'x': int(x),
-                                'y': int(y),
-                                'radius': int(radius),
-                                'area': area,
-                                'color': color_name,
-                                'circularity': circularity,
-                                'fill_ratio': fill_ratio,
-                                'solidity': solidity
-                            })
-                    else:
-                        if circularity >= min_circularity and fill_ratio >= 0.45 and solidity >= 0.85:
-                            balls.append({
-                                'x': int(x),
-                                'y': int(y),
-                                'radius': int(radius),
-                                'area': area,
-                                'color': color_name,
-                                'circularity': circularity,
-                                'fill_ratio': fill_ratio,
-                                'solidity': solidity
-                            })
+            if not (min_radius <= radius <= max_radius):
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
+            circle_area = np.pi * radius * radius
+            fill_ratio  = area / circle_area if circle_area > 0 else 0
+            hull        = cv2.convexHull(contour)
+            hull_area   = cv2.contourArea(hull)
+            solidity    = area / hull_area if hull_area > 0 else 0
+
+            if circularity < min_circ or fill_ratio < min_fill or solidity < min_solid:
+                continue
+
+            # Optional per-contour mean-HSV gate for ORANGE (disabled when thresholds are 0/179)
+            if color_name == "ORANGE" and hsv is not None:
+                contour_mask = np.zeros(mask.shape, dtype=np.uint8)
+                cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+                mean_h, mean_s, mean_v, _ = cv2.mean(hsv, mask=contour_mask)
+                if not (cr['mean_h_min'] <= mean_h <= cr['mean_h_max']
+                        and mean_s >= cr['mean_s_min']
+                        and mean_v >= cr['mean_v_min']):
+                    continue
+
+            balls.append({
+                'x': int(x), 'y': int(y), 'radius': int(radius),
+                'area': area, 'color': color_name,
+                'circularity': circularity, 'fill_ratio': fill_ratio, 'solidity': solidity,
+            })
         
         return balls
     
@@ -290,11 +318,12 @@ class BallHuntingPlanner:
         """Detect red walls and X obstacle structure"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Red wraps around the HSV hue axis, so combine low-hue and high-hue bands.
-        lower_red_1 = np.array([0, 80, 70])
-        upper_red_1 = np.array([10, 255, 255])
-        lower_red_2 = np.array([170, 80, 70])
-        upper_red_2 = np.array([179, 255, 255])
+        # Red wraps around the HSV hue axis – use two bands from calibrated ranges.
+        cr_r = self.color_ranges['RED']
+        lower_red_1 = np.array(cr_r['lower'])
+        upper_red_1 = np.array(cr_r['upper'])
+        lower_red_2 = np.array(cr_r['lower2'])
+        upper_red_2 = np.array(cr_r['upper2'])
         mask_red_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
         mask_red_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
         mask_red = cv2.bitwise_or(mask_red_1, mask_red_2)
@@ -405,7 +434,161 @@ class BallHuntingPlanner:
         self._last_dropoff = dropoff
 
         return commands
-    
+
+    # ------------------------------------------------------------------
+    # Live HSV calibration
+    # ------------------------------------------------------------------
+
+    def run_calibration_mode(self):
+        """
+        Trackbar-based live HSV calibration.
+
+        Drag the sliders and watch the mask update in real time.
+        The calibrated values are applied to ball/wall detection immediately
+        and saved to color_ranges.json when you press S.
+
+        Controls:
+          TAB  – cycle between WHITE / ORANGE / RED
+          S    – save current values (updates detection instantly)
+          Q    – exit calibration
+        """
+        COLORS = ['WHITE', 'ORANGE', 'RED']
+        color_idx = [0]
+
+        CAL_WIN  = 'HSV Calibration'
+        MASK_WIN = 'Calibration Mask'
+        cv2.namedWindow(CAL_WIN)
+        cv2.namedWindow(MASK_WIN)
+
+        def nothing(_):
+            pass
+
+        def _saved_positions(color):
+            """Return (h_min, h_max, s_min, s_max, v_min, v_max) from saved ranges."""
+            cr = self.color_ranges[color]
+            if color == 'RED':
+                return (
+                    min(cr['upper'][0],  179),   # H min = top of low band
+                    min(cr['lower2'][0], 179),   # H max = bottom of high band
+                    cr['lower'][1], cr['upper'][1],
+                    cr['lower'][2], cr['upper'][2],
+                )
+            lo, hi = cr['lower'], cr['upper']
+            return (
+                min(lo[0], 179), min(hi[0], 179),
+                lo[1], hi[1],
+                lo[2], hi[2],
+            )
+
+        # Create every trackbar at the saved value for the first color so
+        # the positions are correct before the first waitKey is called.
+        init = _saved_positions(COLORS[color_idx[0]])
+        for (name, max_val), val in zip(
+            [('H min', 179), ('H max', 179),
+             ('S min', 255), ('S max', 255),
+             ('V min', 255), ('V max', 255)],
+            init
+        ):
+            cv2.createTrackbar(name, CAL_WIN, int(val), max_val, nothing)
+
+        def _load_trackbars(color):
+            """Update trackbar positions to the saved values for color."""
+            h_min, h_max, s_min, s_max, v_min, v_max = _saved_positions(color)
+            cv2.setTrackbarPos('H min', CAL_WIN, h_min)
+            cv2.setTrackbarPos('H max', CAL_WIN, h_max)
+            cv2.setTrackbarPos('S min', CAL_WIN, s_min)
+            cv2.setTrackbarPos('S max', CAL_WIN, s_max)
+            cv2.setTrackbarPos('V min', CAL_WIN, v_min)
+            cv2.setTrackbarPos('V max', CAL_WIN, v_max)
+
+        def _get_trackbars():
+            return {k: cv2.getTrackbarPos(k, CAL_WIN)
+                    for k in ('H min', 'H max', 'S min', 'S max', 'V min', 'V max')}
+
+        print("\n--- HSV Calibration ---")
+        print("  TAB  : cycle WHITE / ORANGE / RED")
+        print("  S    : save to color_ranges.json")
+        print("  Q    : exit calibration")
+        print()
+
+        TINTS = {'WHITE': (255, 255, 255), 'ORANGE': (0, 140, 255), 'RED': (0, 0, 255)}
+
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+
+            color = COLORS[color_idx[0]]
+            tb = _get_trackbars()
+            h_min, h_max = tb['H min'], tb['H max']
+            s_min, s_max = tb['S min'], tb['S max']
+            v_min, v_max = tb['V min'], tb['V max']
+
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+            if color == 'RED':
+                # H min = upper bound of the low band (0..H_min)
+                # H max = lower bound of the high band (H_max..179)
+                m1 = cv2.inRange(hsv, np.array([0,     s_min, v_min]),
+                                      np.array([h_min, s_max, v_max]))
+                m2 = cv2.inRange(hsv, np.array([h_max, s_min, v_min]),
+                                      np.array([179,   s_max, v_max]))
+                mask = cv2.bitwise_or(m1, m2)
+                h_label = "H:0-{}  and  {}-179".format(h_min, h_max)
+            else:
+                mask = cv2.inRange(hsv,
+                                   np.array([h_min, s_min, v_min]),
+                                   np.array([h_max, s_max, v_max]))
+                h_label = "H:{}-{}".format(h_min, h_max)
+
+            # Coloured overlay on the camera frame
+            overlay = frame.copy()
+            overlay[mask > 0] = TINTS[color]
+            display = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
+
+            fh, fw = display.shape[:2]
+            cv2.putText(display,
+                        "CALIBRATE: {} | TAB=switch  S=save  Q=quit".format(color),
+                        (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            cv2.putText(display,
+                        "{}   S:{}-{}   V:{}-{}".format(h_label, s_min, s_max, v_min, v_max),
+                        (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1)
+            if color == 'RED':
+                cv2.putText(display,
+                            "RED: H min = top of low band   H max = bottom of high band",
+                            (10, fh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 180, 180), 1)
+
+            cv2.imshow(CAL_WIN, display)
+            cv2.imshow(MASK_WIN, mask)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == 9:  # TAB
+                color_idx[0] = (color_idx[0] + 1) % len(COLORS)
+                _load_trackbars(COLORS[color_idx[0]])
+                print("Switched to: {}".format(COLORS[color_idx[0]]))
+            elif key == ord('s'):
+                if color == 'RED':
+                    self.color_ranges['RED']['lower']  = [0,     s_min, v_min]
+                    self.color_ranges['RED']['upper']  = [h_min, s_max, v_max]
+                    self.color_ranges['RED']['lower2'] = [h_max, s_min, v_min]
+                    self.color_ranges['RED']['upper2'] = [179,   s_max, v_max]
+                else:
+                    self.color_ranges[color]['lower'] = [h_min, s_min, v_min]
+                    self.color_ranges[color]['upper'] = [h_max, s_max, v_max]
+                    if color == 'ORANGE':
+                        # Keep per-contour mean-hue check just slightly wider than the mask range
+                        self.color_ranges['ORANGE']['mean_h_min'] = max(0, h_min - 2)
+                        self.color_ranges['ORANGE']['mean_h_max'] = min(179, h_max + 5)
+                self._save_color_ranges()
+                print("Saved {} → lower={} upper={}".format(
+                    color, self.color_ranges[color]['lower'], self.color_ranges[color]['upper']))
+
+        cv2.destroyWindow(CAL_WIN)
+        cv2.destroyWindow(MASK_WIN)
+
     def run_planning_mode(self):
         """
         Interactive mode to analyze course and generate mission.
@@ -420,6 +603,9 @@ class BallHuntingPlanner:
         print("Ball Hunting Navigator")
         print("=" * 50)
         print("  LEFT-CLICK  : set robot start position")
+        print("  RIGHT-CLICK : print HSV at cursor to console")
+        print("  HOVER       : live HSV shown at bottom-left")
+        print("  C           : open HSV calibration (trackbars)")
         print("  SPACE       : analyse frame and generate mission")
         print("  D           : show planned path overlay")
         print("  S           : take screenshot")
@@ -433,12 +619,24 @@ class BallHuntingPlanner:
         debug_vis = None       # path overlay image
         masks_visible = True   # toggle mask windows on/off
         screenshot_count = self._get_next_screenshot_number() - 1  # counter for unique screenshot names
+        mouse_pos = [0, 0]     # updated on mouse move for live HSV readout
 
         def on_mouse(event, x, y, flags, param):
             nonlocal robot_pos
+            mouse_pos[0], mouse_pos[1] = x, y
             if event == cv2.EVENT_LBUTTONDOWN:
                 robot_pos = (x, y)
                 print("Robot position set to ({}, {})".format(x, y))
+            elif event == cv2.EVENT_RBUTTONDOWN:
+                # Right-click: print exact HSV at cursor to console for calibration
+                if last_frame is not None:
+                    hsv_frame = cv2.cvtColor(last_frame, cv2.COLOR_BGR2HSV)
+                    fh, fw = hsv_frame.shape[:2]
+                    cx, cy = max(0, min(x, fw - 1)), max(0, min(y, fh - 1))
+                    h_val, s_val, v_val = hsv_frame[cy, cx]
+                    bgr = last_frame[cy, cx]
+                    print("RIGHT-CLICK HSV at ({},{}): H={} S={} V={} | BGR={}".format(
+                        cx, cy, h_val, s_val, v_val, bgr))
 
         cv2.namedWindow('Ball Detection')
         cv2.setMouseCallback('Ball Detection', on_mouse)
@@ -497,13 +695,24 @@ class BallHuntingPlanner:
                 cv2.putText(display_frame, status, (10, 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
+                # Live HSV readout at mouse cursor
+                hsv_live = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                fh, fw = hsv_live.shape[:2]
+                mx, my = max(0, min(mouse_pos[0], fw - 1)), max(0, min(mouse_pos[1], fh - 1))
+                h_cur, s_cur, v_cur = hsv_live[my, mx]
+                hsv_label = "HSV({},{})= H:{} S:{} V:{}".format(mx, my, h_cur, s_cur, v_cur)
+                cv2.putText(display_frame, hsv_label, (10, fh - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                cv2.drawMarker(display_frame, (mx, my), (0, 255, 255),
+                               cv2.MARKER_CROSS, 14, 1)
+
                 cv2.imshow('Ball Detection', display_frame)
                 
                 # Show color detection masks for debugging (toggle with M key)
                 if masks_visible:
-                    cv2.imshow('WHITE mask', analysis['white_mask'])
-                    cv2.imshow('ORANGE mask', analysis['orange_mask'])
-                    cv2.imshow('RED walls', analysis['red_walls']['mask'])
+                    cv2.imshow('WHITE mask (raw HSV)', analysis['white_mask'])
+                    cv2.imshow('ORANGE mask (raw HSV)', analysis['orange_mask'])
+                    cv2.imshow('RED walls (raw HSV)', analysis['red_walls']['mask'])
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
@@ -513,9 +722,9 @@ class BallHuntingPlanner:
                     if masks_visible:
                         print("Mask windows enabled")
                     else:
-                        cv2.destroyWindow('WHITE mask')
-                        cv2.destroyWindow('ORANGE mask')
-                        cv2.destroyWindow('RED walls')
+                        cv2.destroyWindow('WHITE mask (raw HSV)')
+                        cv2.destroyWindow('ORANGE mask (raw HSV)')
+                        cv2.destroyWindow('RED walls (raw HSV)')
                         print("Mask windows disabled")
                 elif key == ord(' '):
                     if robot_pos is None:
@@ -536,6 +745,13 @@ class BallHuntingPlanner:
                             self._last_ball_order,
                         )
                     print("Mission generated. Ready to run on EV3.")
+                elif key == ord('c'):
+                    # Enter calibration mode; ball tracks are cleared so fresh detections
+                    # are evaluated immediately with the new ranges on return.
+                    print("\nEntering calibration mode...")
+                    self._ball_tracks = {"WHITE": [], "ORANGE": []}
+                    self.run_calibration_mode()
+                    print("Returned to planning mode with updated ranges.")
                 elif key == ord('d') and debug_vis is not None:
                     cv2.imshow('Planned Path', debug_vis)
                 elif key == ord('s'):
