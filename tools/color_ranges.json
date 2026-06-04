@@ -2,11 +2,12 @@
   "WHITE": {
     "lower": [0, 0, 175],
     "upper": [179, 50, 255],
-    "radius_min": 1,
+    "radius_min": 5,
     "radius_max": 999,
-    "circularity": 0.0,
-    "fill_ratio": 0.0,
-    "solidity": 0.0
+    "circularity": 0.55,
+    "fill_ratio": 0.40,
+    "solidity": 0.65,
+    "aspect_ratio": 2.0
   },
   "ORANGE": {
     "lower": [5, 60, 80],
@@ -15,11 +16,12 @@
     "mean_h_max": 179,
     "mean_s_min": 0,
     "mean_v_min": 0,
-    "radius_min": 1,
+    "radius_min": 5,
     "radius_max": 999,
-    "circularity": 0.0,
-    "fill_ratio": 0.0,
-    "solidity": 0.0
+    "circularity": 0.55,
+    "fill_ratio": 0.40,
+    "solidity": 0.65,
+    "aspect_ratio": 2.0
   },
   "RED": {
     "lower": [0, 80, 70],
