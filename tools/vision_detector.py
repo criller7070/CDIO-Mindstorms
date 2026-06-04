@@ -15,8 +15,8 @@ class BallDetector:
         # Detection parameters (all shape gates are in color_ranges)
         self.min_ball_area      = 10
         self.border_margin      = 0
-        self.ball_confirm_frames = 2
-        self.ball_miss_frames   = 4
+        self.ball_confirm_frames = 7
+        self.ball_miss_frames   = 6
         self.ball_match_distance = 18
         self._ball_tracks       = {"WHITE": [], "ORANGE": []}
         self.min_red_line_length = 50
