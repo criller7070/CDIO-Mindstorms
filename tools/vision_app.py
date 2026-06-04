@@ -21,6 +21,7 @@ from vision_config import (
 )
 from vision_detector import BallDetector
 from vision_calibration import run_calibration
+from vision_auto_calibrate import run_auto_calibration
 
 
 class VisionApp:
@@ -50,6 +51,7 @@ class VisionApp:
         print("  RIGHT-CLICK : print HSV at cursor to console")
         print("  HOVER       : live HSV shown at bottom-left")
         print("  C           : open HSV calibration (trackbars)")
+        print("  A           : auto-calibration (click to sample colours)")
         print("  SPACE       : analyse frame and generate mission")
         print("  D           : show planned path overlay")
         print("  S           : take screenshot")
@@ -162,6 +164,12 @@ class VisionApp:
                     print("\nEntering calibration mode...")
                     self.detector._ball_tracks = {"WHITE": [], "ORANGE": []}
                     run_calibration(self.cap, self.color_ranges)
+                    print("Returned to planning mode.")
+
+                elif key == ord('a'):
+                    print("\nEntering auto-calibration mode...")
+                    self.detector._ball_tracks = {"WHITE": [], "ORANGE": []}
+                    run_auto_calibration(self.cap, self.color_ranges)
                     print("Returned to planning mode.")
 
                 elif key == ord(' '):
