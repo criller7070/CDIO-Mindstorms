@@ -72,6 +72,14 @@ Download from the LEGO Education website and follow their instructions. Verify i
 
 Copy `robot/main.py` and `robot/commands.txt` to the EV3 project folder. `main.py` is already named correctly for PyBricks.
 
+Windows (robot-only deploy):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/deploy_robot_only.ps1
+```
+
+This uploads files from `robot/` only, never the full repository.
+
 ### 4. Pair EV3 via Bluetooth (if using host sender)
 
 EV3: Settings → Bluetooth → Enable. Pair from host PC (PIN: 1234).

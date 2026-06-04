@@ -51,6 +51,16 @@ cp missions/commands_gate_test.txt robot/commands.txt
 
 Then redeploy to the EV3.
 
+## Deploying To EV3 (Robot-Only)
+
+Use this from repository root on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/deploy_robot_only.ps1
+```
+
+This uploads files from `robot/` only (flat to `/home/robot/`) and avoids sending the full repo.
+
 ## Command Format
 
 Mission files use plain text, one command per line:

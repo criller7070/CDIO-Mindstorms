@@ -8,6 +8,9 @@ Monitors execution and logs all activity
 """
 
 import socket
+# AF_BTH was dropped from Python 3.13's socket module; it's Windows constant 32.
+if not hasattr(socket, 'AF_BTH'):
+    socket.AF_BTH = 32
 import subprocess
 import re
 import time

@@ -67,10 +67,10 @@ class EV3NavController:
         # Try DriveBase with minimal parameters
         try:
             self.robot = DriveBase(
-                self.left_motor, 
-                self.right_motor, 
-                wheel_diameter=55,
-                axle_track=104
+                self.left_motor,
+                self.right_motor,
+                wheel_diameter=2.15,  # effective: 43mm sprocket / ~20:1 gear reduction
+                axle_track=43         # center-to-center between tracks (mm)
             )
             print("[OK] DriveBase initialized")
             self.ev3.screen.clear()
@@ -91,7 +91,7 @@ class EV3NavController:
             print("[DEBUG] Gyro sensor not found or failed; using default turning")
         
         self.forward_speed = 200
-        self.turn_speed = 90
+        self.turn_speed = 2
         self.lift_speed = 150
         
         self.commands_executed = 0
@@ -189,11 +189,14 @@ class EV3NavController:
                 if value != 0:
                     self._log("TURN {} deg".format(value))
                     if self.robot:
-                        self.robot.turn(value)
+                        # Calibrated: 47 DriveBase degrees = 90 physical degrees
+                        scaled = int(round(value * 47.0 / 90.0))
+                        self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
-                        motor_angle = abs(value) * 4  # Empirical: 1 deg = ~4 motor degrees
+                        # Calibrated: 47 DriveBase degrees = 90 physical degrees
+                        motor_angle = int(round(abs(value) * 47.0 / 90.0)) * 4
                         if value > 0:
                             # Turn right: left forward, right backward
                             self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
@@ -290,7 +293,9 @@ class EV3NavController:
                 if self.lift_motor:
                     if value > 0:
                         self._log("LIFT UP {} deg".format(value))
-                        self.lift_motor.run_angle(-self.lift_speed, value)
+                        # Calibrated: 130 motor degrees = 45 physical degrees
+                        scaled = int(round(value * 130.0 / 45.0))
+                        self.lift_motor.run_angle(-self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
                         self._log("OK ({:.1f}s)".format(cmd_time))
@@ -307,7 +312,9 @@ class EV3NavController:
                 if self.lift_motor:
                     if value > 0:
                         self._log("LIFT DOWN {} deg".format(value))
-                        self.lift_motor.run_angle(self.lift_speed, value)
+                        # Calibrated: 130 motor degrees = 45 physical degrees
+                        scaled = int(round(value * 130.0 / 45.0))
+                        self.lift_motor.run_angle(self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
                         self._log("OK ({:.1f}s)".format(cmd_time))
