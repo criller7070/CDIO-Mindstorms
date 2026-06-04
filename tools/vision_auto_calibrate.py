@@ -143,9 +143,10 @@ def _compute_range(pixels, color_name):
 
 # ── Per-frame analysis ────────────────────────────────────────────────────────
 
-def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges):
+def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
     fh, fw = frame.shape[:2]
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    if hsv is None:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     # RED — boundary + accumulate
     red_mask   = _morph(_mask_from_range(hsv, color_ranges['RED']), close=7, open_=5)
@@ -219,15 +220,21 @@ def run_auto_calibration(cap, color_ranges):
         return {}
     fh, fw = probe.shape[:2]
 
-    hit_maps  = {c: np.zeros((fh, fw), np.float32) for c in ('RED', 'ORANGE', 'WHITE')}
-    hsv_pools = {c: [] for c in ('RED', 'ORANGE', 'WHITE')}
+    hit_maps     = {c: np.zeros((fh, fw), np.float32) for c in ('RED', 'ORANGE', 'WHITE')}
+    hsv_pools    = {c: [] for c in ('RED', 'ORANGE', 'WHITE')}
+    sampled_hsvs = []   # one HSV image every SAMPLE_EVERY frames
+    SAMPLE_EVERY = 20   # 50 samples across 1000 frames ≈ 45 MB
 
     for i in range(CAPTURE_FRAMES):
         ret, frame = cap.read()
         if not ret:
             break
         frame    = cv2.flip(frame, 1)
-        red_mask = _analyse_frame(frame, hit_maps, hsv_pools, color_ranges)
+        hsv      = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_mask = _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv)
+
+        if i % SAMPLE_EVERY == 0:
+            sampled_hsvs.append(hsv)
 
         pct = int((i + 1) / CAPTURE_FRAMES * 100)
         preview = frame.copy()
@@ -256,14 +263,12 @@ def run_auto_calibration(cap, color_ranges):
                 color_name, reliable_pixel_count))
             continue
 
-        # Re-collect pixels only from reliable locations using the last frame's HSV
-        ret, last_frame = cap.read()
-        if ret:
-            last_frame = cv2.flip(last_frame, 1)
-            last_hsv   = cv2.cvtColor(last_frame, cv2.COLOR_BGR2HSV)
-            stable_px  = last_hsv[reliable > 0]
+        # Collect pixels from reliable locations across all sampled frames so no
+        # single frame's transient glare or shadow can skew the result.
+        if sampled_hsvs:
+            px_parts  = [h[reliable > 0] for h in sampled_hsvs]
+            stable_px = np.vstack([p for p in px_parts if len(p) > 0])
         else:
-            # Fallback: use all pooled pixels from the latter half of capture
             cutoff    = max(1, len(raw_pool) * 3 // 4)
             stable_px = np.vstack(raw_pool[cutoff:]) if len(raw_pool) > 4 else np.vstack(raw_pool)
 
