@@ -47,7 +47,7 @@ class VisionApp:
     def run(self):
         print("Ball Hunting Navigator")
         print("=" * 50)
-        print("  LEFT-CLICK  : set robot start position")
+        print("  LEFT-CLICK  : click a white ball to lock robot to it, or click anywhere to set manually")
         print("  RIGHT-CLICK : print HSV at cursor to console")
         print("  HOVER       : live HSV shown at bottom-left")
         print("  C           : open HSV calibration (trackbars)")
@@ -59,19 +59,33 @@ class VisionApp:
         print("  Q           : quit")
         print()
 
-        robot_pos      = None
-        last_frame     = None
-        debug_vis      = None
-        masks_visible  = True
-        screenshot_num = self._next_screenshot_number() - 1
-        mouse_pos      = [0, 0]
+        robot_pos       = None
+        locked_ball_pos = None   # if set, robot_pos tracks the nearest white ball
+        last_frame      = None
+        debug_vis       = None
+        masks_visible   = True
+        screenshot_num  = self._next_screenshot_number() - 1
+        mouse_pos       = [0, 0]
+        last_balls      = []     # updated each frame, readable by mouse callback
 
         def on_mouse(event, x, y, flags, param):
-            nonlocal robot_pos
+            nonlocal robot_pos, locked_ball_pos
             mouse_pos[0], mouse_pos[1] = x, y
             if event == cv2.EVENT_LBUTTONDOWN:
-                robot_pos = (x, y)
-                print("Robot position set to ({}, {})".format(x, y))
+                white_balls = [b for b in last_balls if b['color'] == 'WHITE']
+                nearest, nearest_dist = None, float('inf')
+                for ball in white_balls:
+                    d = np.hypot(x - ball['x'], y - ball['y'])
+                    if d < nearest_dist:
+                        nearest, nearest_dist = ball, d
+                if nearest is not None and nearest_dist <= nearest['radius'] + 15:
+                    locked_ball_pos = (nearest['x'], nearest['y'])
+                    robot_pos = locked_ball_pos
+                    print("Robot locked to white ball at ({}, {})".format(*locked_ball_pos))
+                else:
+                    locked_ball_pos = None
+                    robot_pos = (x, y)
+                    print("Robot position set to ({}, {})".format(x, y))
             elif event == cv2.EVENT_RBUTTONDOWN and last_frame is not None:
                 hsv_f = cv2.cvtColor(last_frame, cv2.COLOR_BGR2HSV)
                 fh, fw = hsv_f.shape[:2]
@@ -96,6 +110,21 @@ class VisionApp:
                 analysis = self.detector.analyze_course(frame)
                 balls    = analysis['balls']
                 bounds   = analysis['field_bounds']
+
+                last_balls[:] = balls
+
+                # Follow locked white ball each frame
+                if locked_ball_pos is not None:
+                    wb = [b for b in balls if b['color'] == 'WHITE']
+                    nearest, nearest_dist = None, float('inf')
+                    for ball in wb:
+                        d = np.hypot(locked_ball_pos[0] - ball['x'],
+                                     locked_ball_pos[1] - ball['y'])
+                        if d < nearest_dist:
+                            nearest, nearest_dist = ball, d
+                    if nearest is not None and nearest_dist <= 40:
+                        locked_ball_pos = (nearest['x'], nearest['y'])
+                        robot_pos = locked_ball_pos
 
                 display = frame.copy()
                 white_count = orange_count = 0
@@ -146,8 +175,12 @@ class VisionApp:
                     cv2.putText(display, "ROBOT", (robot_pos[0] + 10, robot_pos[1]),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
-                hint = "Click to set robot pos" if not robot_pos \
-                       else "SPACE=plan D=debug M=masks S=screenshot Q=quit"
+                if not robot_pos:
+                    hint = "Click a white ball (or anywhere) to set robot pos"
+                elif locked_ball_pos is not None:
+                    hint = "LOCKED to ball | SPACE=plan D=debug S=screenshot Q=quit"
+                else:
+                    hint = "SPACE=plan D=debug M=masks S=screenshot Q=quit"
                 cv2.putText(display,
                             "White:{} Orange:{} | {}".format(white_count, orange_count, hint),
                             (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
