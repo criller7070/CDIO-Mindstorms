@@ -34,15 +34,18 @@ class BallDetector:
         field_bounds = self.detect_field_bounds(frame)
         fh, fw = frame.shape[:2]
 
-        # Reject balls whose centre lands on or outside the wall boundary.
-        fx0, fy0, fx1, fy1 = field_bounds
-        inset = self.FIELD_INSET
-        field_w = fx1 - fx0
-        field_h = fy1 - fy0
-        if field_w > 60 and field_h > 60:   # only filter when bounds look valid
+        # Keep only balls whose centre is at least FIELD_INSET pixels inside the
+        # convex hull of all red wall pixels.  pointPolygonTest returns a signed
+        # distance: positive = inside, negative = outside.  Using the hull (not a
+        # bounding rect) means the check works at any camera angle and handles
+        # gaps in the red-wall detection more gracefully than a rectangle would.
+        red_cnts, _ = cv2.findContours(red_walls['mask'],
+                                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if red_cnts:
+            hull = cv2.convexHull(np.vstack(red_cnts))
             balls = [b for b in balls
-                     if fx0 + inset <= b['x'] <= fx1 - inset
-                     and fy0 + inset <= b['y'] <= fy1 - inset]
+                     if cv2.pointPolygonTest(
+                         hull, (float(b['x']), float(b['y'])), True) >= self.FIELD_INSET]
 
         return {
             'balls':        balls,

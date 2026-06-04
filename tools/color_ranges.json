@@ -21,15 +21,15 @@
     "lower": [
       5,
       60,
-      80
+      131
     ],
     "upper": [
       25,
       255,
       255
     ],
-    "mean_h_min": 0,
-    "mean_h_max": 179,
+    "mean_h_min": 3,
+    "mean_h_max": 30,
     "mean_s_min": 0,
     "mean_v_min": 0,
     "radius_min": 5,
