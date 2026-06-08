@@ -15,6 +15,7 @@ Coordinate system (image space):
 """
 
 import heapq
+import cv2
 import numpy as np
 from itertools import permutations
 
@@ -37,7 +38,8 @@ class FieldPlanner:
                  wall_margin=45,
                  center_radius=60,
                  field_width_mm=FIELD_WIDTH_MM,
-                 field_height_mm=FIELD_HEIGHT_MM):
+                 field_height_mm=FIELD_HEIGHT_MM,
+                 field_hull=None):
         """
         field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
         center_pos:      (cx, cy) pixel coords of center crosshair
@@ -45,11 +47,14 @@ class FieldPlanner:
         center_radius:   pixel radius of center no-go zone
         field_width_mm:  real-world field width in mm (for command distances)
         field_height_mm: real-world field height in mm
+        field_hull:      optional (N,1,2) cv2 contour of the actual wall shape;
+                         cells outside it are blocked regardless of wall_margin
         """
         self.bounds = field_bounds
         self.center = center_pos
         self.wall_margin = wall_margin
         self.center_radius = center_radius
+        self._field_hull = field_hull
 
         x_min, y_min, x_max, y_max = field_bounds
         self.x0, self.y0 = x_min, y_min
@@ -80,7 +85,14 @@ class FieldPlanner:
         grid = [[False] * self.gh for _ in range(self.gw)]
         for gx in range(self.gw):
             for gy in range(self.gh):
-                # Wall buffer
+                # Outside actual field hull (non-rectangular walls)
+                if self._field_hull is not None:
+                    px, py = self._to_px(gx, gy)
+                    if cv2.pointPolygonTest(
+                            self._field_hull, (float(px), float(py)), False) < 0:
+                        grid[gx][gy] = True
+                        continue
+                # Rectangular wall buffer (fallback or extra margin)
                 if gx < margin or gx >= self.gw - margin:
                     grid[gx][gy] = True
                 elif gy < margin or gy >= self.gh - margin:
@@ -377,13 +389,22 @@ class FieldPlanner:
         ry_mm = (robot_pos[1] - self.y0) / self.px_per_mm
         hx_mm = (dropoff_pos[0] - self.x0) / self.px_per_mm
         hy_mm = (dropoff_pos[1] - self.y0) / self.px_per_mm
-        return [
+        meta = [
             "# SIM_CENTER: {:.0f} {:.0f}".format(cx_mm, cy_mm),
             "# SIM_CENTER_R: {:.0f}".format(cr_mm),
             "# SIM_WALL: {:.0f}".format(wm_mm),
             "# SIM_START: {:.0f} {:.0f}".format(rx_mm, ry_mm),
             "# SIM_HOLE: {:.0f} {:.0f}".format(hx_mm, hy_mm),
         ]
+        if self._field_hull is not None:
+            pts = self._field_hull.reshape(-1, 2)
+            pairs = " ".join(
+                "{:.0f} {:.0f}".format((px - self.x0) / self.px_per_mm,
+                                       (py - self.y0) / self.px_per_mm)
+                for px, py in pts
+            )
+            meta.append("# SIM_HULL: {}".format(pairs))
+        return meta
 
     # ------------------------------------------------------------------
     # Multi-trip planning

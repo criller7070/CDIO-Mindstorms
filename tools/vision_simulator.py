@@ -124,6 +124,7 @@ class Simulator:
         self.center_r_mm = CENTER_RADIUS_MM
         self.wall_mm     = WALL_MARGIN_MM
         self.hole_mm     = (FIELD_WIDTH_MM * HOLE_FRAC_X, FIELD_HEIGHT_MM * HOLE_FRAC_Y)
+        self.hull_mm     = None   # list of (x_mm, y_mm) when hull is available
         self.init_heading = float(INITIAL_HEADING_DEG)
 
         self.commands  = []
@@ -178,6 +179,12 @@ class Simulator:
         else:
             self.hole_mm = (FIELD_WIDTH_MM * HOLE_FRAC_X, FIELD_HEIGHT_MM * HOLE_FRAC_Y)
 
+        if 'SIM_HULL' in meta:
+            pts = meta['SIM_HULL']
+            self.hull_mm = [(pts[i], pts[i + 1]) for i in range(0, len(pts) - 1, 2)]
+        else:
+            self.hull_mm = None
+
         self.reset()
 
     def reset(self):
@@ -228,10 +235,16 @@ class Simulator:
         return canvas
 
     def _draw_field(self, canvas):
-        p0 = self._mm_to_canvas(0, 0)
-        p1 = self._mm_to_canvas(FIELD_WIDTH_MM, FIELD_HEIGHT_MM)
-        cv2.rectangle(canvas, p0, p1, C_FIELD, -1)
-        cv2.rectangle(canvas, p0, p1, C_BORDER, 2)
+        if self.hull_mm:
+            hull_pts = np.array([self._mm_to_canvas(x, y) for x, y in self.hull_mm],
+                                dtype=np.int32)
+            cv2.fillPoly(canvas, [hull_pts], C_FIELD)
+            cv2.polylines(canvas, [hull_pts], True, C_BORDER, 2)
+        else:
+            p0 = self._mm_to_canvas(0, 0)
+            p1 = self._mm_to_canvas(FIELD_WIDTH_MM, FIELD_HEIGHT_MM)
+            cv2.rectangle(canvas, p0, p1, C_FIELD, -1)
+            cv2.rectangle(canvas, p0, p1, C_BORDER, 2)
 
         # Wall margin guide
         m = self.wall_mm

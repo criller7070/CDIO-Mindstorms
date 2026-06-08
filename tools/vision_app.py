@@ -152,23 +152,8 @@ class VisionApp:
                 else:
                     cv2.rectangle(display, (x0, y0), (x1, y1), (80, 80, 160), 1)
 
-                # ── Centre detection ────────────────────────────────────────
-                cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-                if field_detected:
-                    bw, bh = x1 - x0, y1 - y0
-                    mfx, mfy = bw * 0.25, bh * 0.25
-                    inner = []
-                    for cnt in red_cnts:
-                        M = cv2.moments(cnt)
-                        if M['m00'] == 0:
-                            continue
-                        ccx, ccy = M['m10'] / M['m00'], M['m01'] / M['m00']
-                        if x0 + mfx <= ccx <= x1 - mfx and y0 + mfy <= ccy <= y1 - mfy:
-                            inner.append(cnt)
-                    if inner:
-                        pts = np.vstack(inner)
-                        cx = int(np.mean(pts[:, 0, 0]))
-                        cy = int(np.mean(pts[:, 0, 1]))
+                # ── Centre position (from detector) ─────────────────────────
+                cx, cy = analysis['center_pos']
 
                 # ── No-go zone (semi-transparent fill) ──────────────────────
                 _nogo = display.copy()
@@ -352,10 +337,10 @@ class VisionApp:
     def _plan_path(self, analysis, robot_pos, capacity=6, hole_override=None):
         balls = analysis['balls']
         x_min, y_min, x_max, y_max = analysis['field_bounds']
-        cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+        center_pos = analysis['center_pos']
 
         if robot_pos is None:
-            robot_pos = (cx, cy)
+            robot_pos = center_pos
 
         if hole_override is not None:
             dropoff = hole_override
@@ -367,18 +352,24 @@ class VisionApp:
                 int(y_min + (y_max - y_min) * HOLE_FRAC_Y),
             )
 
+        wall_margin = analysis['wall_margin'] or WALL_MARGIN
+
         planner = FieldPlanner(
             field_bounds=analysis['field_bounds'],
-            center_pos=(int(cx), int(cy)),
-            wall_margin=WALL_MARGIN,
+            center_pos=center_pos,
+            wall_margin=wall_margin,
             center_radius=CENTER_RADIUS,
             field_width_mm=FIELD_WIDTH_MM,
             field_height_mm=FIELD_HEIGHT_MM,
+            field_hull=analysis['field_hull'],
         )
 
         ball_positions = [(b['x'], b['y']) for b in balls]
         print("Planning {} ball(s), capacity {}, hole at {}...".format(
             len(balls), capacity, dropoff))
+        print("  center={} wall_margin={}{}".format(
+            center_pos, wall_margin,
+            " (detected)" if analysis['wall_margin'] else " (config fallback)"))
 
         commands = planner.plan_trips(
             robot_pos=robot_pos,

@@ -44,8 +44,14 @@ class BallDetector:
                      if cv2.pointPolygonTest(
                          hull, (float(b['x']), float(b['y'])), True) >= self.FIELD_INSET]
             field_bounds = self._bounds_from_mask(red_walls['mask'])
+            field_hull   = hull
         else:
             field_bounds = (20, 20, fw - 20, fh - 20)
+            field_hull   = None
+
+        center_pos   = self._detect_center(red_cnts, field_bounds, field_detected)
+        wall_margin  = (self._detect_wall_margin(red_walls['mask'], field_bounds)
+                        if field_detected else None)
 
         return {
             'balls':          balls,
@@ -54,9 +60,78 @@ class BallDetector:
             'red_walls':      red_walls,
             'field_bounds':   field_bounds,
             'field_detected': field_detected,
+            'field_hull':     field_hull,
+            'center_pos':     center_pos,
+            'wall_margin':    wall_margin,
             'frame_h': fh,
             'frame_w': fw,
         }
+
+    @staticmethod
+    def _detect_center(red_cnts, field_bounds, field_detected):
+        """Return the pixel position of the centre obstacle.
+
+        When field is detected, looks for inner red contours (the X marker)
+        in the central 50 % of the field to find the true obstacle centre.
+        Falls back to the geometric midpoint of the field bounds.
+        """
+        x0, y0, x1, y1 = field_bounds
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        if not field_detected or not red_cnts:
+            return (cx, cy)
+        bw, bh = x1 - x0, y1 - y0
+        mfx, mfy = bw * 0.25, bh * 0.25
+        inner = []
+        for cnt in red_cnts:
+            M = cv2.moments(cnt)
+            if M['m00'] == 0:
+                continue
+            ccx = M['m10'] / M['m00']
+            ccy = M['m01'] / M['m00']
+            if x0 + mfx <= ccx <= x1 - mfx and y0 + mfy <= ccy <= y1 - mfy:
+                inner.append(cnt)
+        if inner:
+            pts = np.vstack(inner)
+            cx = int(np.mean(pts[:, 0, 0]))
+            cy = int(np.mean(pts[:, 0, 1]))
+        return (cx, cy)
+
+    @staticmethod
+    def _detect_wall_margin(red_mask, field_bounds):
+        """Estimate wall thickness in pixels by scanning inward from each edge.
+
+        Scans along 5 evenly-spaced lines parallel to each wall and counts
+        consecutive red pixels from the edge inward.  Returns the median
+        thickness (minimum 8 px), or None if too few samples are found.
+        """
+        x0, y0, x1, y1 = field_bounds
+        h, w = red_mask.shape[:2]
+        thicknesses = []
+
+        for frac in (0.25, 0.375, 0.50, 0.625, 0.75):
+            # Horizontal row: measure left- and right-wall thickness
+            y = max(0, min(h - 1, int(y0 + (y1 - y0) * frac)))
+            row = red_mask[y, max(0, x0):min(w, x1)]
+            zeros_l = np.where(row == 0)[0]
+            if len(zeros_l):
+                thicknesses.append(int(zeros_l[0]))
+            zeros_r = np.where(row[::-1] == 0)[0]
+            if len(zeros_r):
+                thicknesses.append(int(zeros_r[0]))
+
+            # Vertical column: measure top- and bottom-wall thickness
+            x = max(0, min(w - 1, int(x0 + (x1 - x0) * frac)))
+            col = red_mask[max(0, y0):min(h, y1), x]
+            zeros_t = np.where(col == 0)[0]
+            if len(zeros_t):
+                thicknesses.append(int(zeros_t[0]))
+            zeros_b = np.where(col[::-1] == 0)[0]
+            if len(zeros_b):
+                thicknesses.append(int(zeros_b[0]))
+
+        if len(thicknesses) >= 4:
+            return max(8, int(np.median(thicknesses)))
+        return None
 
     def detect_balls(self, frame):
         """Return (balls, raw_white_mask, raw_orange_mask)."""
