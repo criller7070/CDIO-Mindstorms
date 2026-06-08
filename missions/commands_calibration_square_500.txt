@@ -1,0 +1,11 @@
+# Calibration test C: square path for turn + distance sanity
+SPEED:200
+FORWARD:500
+TURN:90
+FORWARD:500
+TURN:90
+FORWARD:500
+TURN:90
+FORWARD:500
+TURN:90
+STOP

@@ -1,0 +1,11 @@
+# Calibration test B: repeated straight runs for consistency
+# Measure each leg and average the error.
+SPEED:200
+FORWARD:500
+STOP
+FORWARD:500
+STOP
+FORWARD:500
+STOP
+FORWARD:500
+STOP
