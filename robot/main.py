@@ -190,13 +190,13 @@ class EV3NavController:
                     self._log("TURN {} deg".format(value))
                     if self.robot:
                         # Calibrated: 47 DriveBase degrees = 90 physical degrees
-                        scaled = int(round(value * 47.0 / 90.0))
+                        scaled = int(round(value * 470.0 / 90.0))
                         self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
                         # Calibrated: 47 DriveBase degrees = 90 physical degrees
-                        motor_angle = int(round(abs(value) * 47.0 / 90.0)) * 4
+                        motor_angle = int(round(abs(value) * 470.0 / 90.0)) * 4
                         if value > 0:
                             # Turn right: left forward, right backward
                             self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
