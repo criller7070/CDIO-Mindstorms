@@ -327,16 +327,13 @@ class FieldPlanner:
     # Command generation
     # ------------------------------------------------------------------
 
-    def paths_to_commands(self, path_segs, initial_heading_deg=0,
-                          collect_lift_deg=90, deposit_lift_deg=90):
+    def paths_to_commands(self, path_segs, initial_heading_deg=0):
         """
         Convert route path segments to EV3 command strings.
 
         path_segs:           output of optimal_route
         initial_heading_deg: robot's starting heading in image-space degrees
                              (-90 = facing up/north, 0 = facing right, 90 = facing down)
-        collect_lift_deg:    degrees to lower/raise lift when collecting a ball
-        deposit_lift_deg:    degrees to lower lift when depositing at the hole
 
         Returns list of command strings for commands.txt.
         """
@@ -365,12 +362,7 @@ class FieldPlanner:
                 dist_mm = max(1, int(dist_px / self.px_per_mm))
                 commands.append("FORWARD:{}".format(dist_mm))
 
-            # Collect or deposit
-            if is_collect:
-                commands.append("LIFT_DOWN:{}".format(collect_lift_deg))
-                commands.append("LIFT_UP:{}".format(collect_lift_deg))
-            else:
-                commands.append("LIFT_DOWN:{}".format(deposit_lift_deg))
+            if not is_collect:
                 commands.append("STOP")
 
         return commands
@@ -397,8 +389,7 @@ class FieldPlanner:
     # Multi-trip planning
     # ------------------------------------------------------------------
 
-    def _segs_to_commands(self, path_segs, is_last_trip, heading,
-                          collect_lift_deg, deposit_lift_deg):
+    def _segs_to_commands(self, path_segs, is_last_trip, heading):
         """
         Convert one trip's path segments to EV3 commands.
         Tracks and returns the robot's final heading so the next trip
@@ -428,19 +419,13 @@ class FieldPlanner:
                 dist_mm = max(1, int(dist_px / self.px_per_mm))
                 commands.append("FORWARD:{}".format(dist_mm))
 
-            if is_collect:
-                commands.append("LIFT_DOWN:{}".format(collect_lift_deg))
-                commands.append("LIFT_UP:{}".format(collect_lift_deg))
-            else:
-                commands.append("LIFT_DOWN:{}".format(deposit_lift_deg))
-                if is_last_trip:
-                    commands.append("STOP")
+            if not is_collect and is_last_trip:
+                commands.append("STOP")
 
         return commands, heading
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
-                   capacity=6, initial_heading_deg=0,
-                   collect_lift_deg=90, deposit_lift_deg=90):
+                   capacity=6, initial_heading_deg=0):
         """
         Capacity-aware multi-trip planner. Handles any number of balls.
 
@@ -470,7 +455,7 @@ class FieldPlanner:
             cmds = ["SPEED:300"] + meta
             if path:
                 trip_cmds, _ = self._segs_to_commands(
-                    [path], True, initial_heading_deg, collect_lift_deg, deposit_lift_deg)
+                    [path], True, initial_heading_deg)
                 cmds += trip_cmds
             return cmds
 
@@ -518,7 +503,7 @@ class FieldPlanner:
 
         # Trip 1 starts from robot_pos
         trip_cmds, heading = self._segs_to_commands(
-            best_first_segs, k == 1, heading, collect_lift_deg, deposit_lift_deg)
+            best_first_segs, k == 1, heading)
         commands += ["# Trip 1/{} – cluster {}".format(k, best_first)] + trip_cmds
 
         # Remaining trips start from the hole
@@ -532,7 +517,7 @@ class FieldPlanner:
             if segs:
                 is_last = (trip_num == k)
                 trip_cmds, heading = self._segs_to_commands(
-                    segs, is_last, heading, collect_lift_deg, deposit_lift_deg)
+                    segs, is_last, heading)
                 commands += ["# Trip {}/{} – cluster {}".format(trip_num, k, i)] + trip_cmds
                 debug_segs.extend(segs)
                 debug_order.extend(hole_ball_orders[i])
