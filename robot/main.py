@@ -91,7 +91,7 @@ class EV3NavController:
             print("[DEBUG] Gyro sensor not found or failed; using default turning")
         
         self.forward_speed = 200
-        self.turn_speed = 2
+        self.turn_speed = 200
         self.lift_speed = 150
         
         self.commands_executed = 0
