@@ -57,6 +57,7 @@ class VisionApp:
         print("  SPACE       : analyse frame and generate mission")
         print("  D           : show planned path overlay")
         print("  V           : open simulator window")
+        print("  H           : enter hole-placement mode (left-click to place, H again to reset)")
         print("  S           : take screenshot")
         print("  M           : toggle mask windows")
         print("  Q           : quit")
@@ -64,17 +65,25 @@ class VisionApp:
 
         robot_pos       = None
         locked_ball_pos = None   # if set, robot_pos tracks the nearest white ball
+        hole_override   = None   # manually placed hole pos; None = use HOLE_FRAC_X/Y
+        placing_hole    = False  # when True, next left-click sets the hole
         last_frame      = None
         debug_vis       = None
         masks_visible   = True
+        mission_ready   = False
         screenshot_num  = self._next_screenshot_number() - 1
         mouse_pos       = [0, 0]
         last_balls      = []     # updated each frame, readable by mouse callback
 
         def on_mouse(event, x, y, flags, param):
-            nonlocal robot_pos, locked_ball_pos
+            nonlocal robot_pos, locked_ball_pos, hole_override, placing_hole
             mouse_pos[0], mouse_pos[1] = x, y
             if event == cv2.EVENT_LBUTTONDOWN:
+                if placing_hole:
+                    hole_override = (x, y)
+                    placing_hole  = False
+                    print("Hole placed at ({}, {})".format(x, y))
+                    return
                 white_balls = [b for b in last_balls if b['color'] == 'WHITE']
                 nearest, nearest_dist = None, float('inf')
                 for ball in white_balls:
@@ -130,75 +139,138 @@ class VisionApp:
                         robot_pos = locked_ball_pos
 
                 display = frame.copy()
-                white_count = orange_count = 0
+                fh, fw  = display.shape[:2]
 
-                for ball in balls:
-                    colour = (255, 255, 255) if ball['color'] == "WHITE" else (0, 165, 255)
-                    cv2.circle(display, (ball['x'], ball['y']), ball['radius'], colour, 2)
-                    cv2.circle(display, (ball['x'], ball['y']), 3, colour, -1)
-                    white_count  += ball['color'] == "WHITE"
-                    orange_count += ball['color'] == "ORANGE"
-
+                # ── Field boundary ──────────────────────────────────────────
                 x0, y0, x1, y1 = bounds
                 field_detected = analysis['field_detected']
                 if field_detected:
                     red_cnts, _ = cv2.findContours(analysis['red_walls']['mask'],
                                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     hull = cv2.convexHull(np.vstack(red_cnts))
-                    cv2.drawContours(display, [hull], -1, (0, 0, 200), 2)
+                    cv2.drawContours(display, [hull], -1, (60, 60, 200), 2)
                 else:
-                    cv2.rectangle(display, (x0, y0), (x1, y1), (0, 0, 200), 1)
+                    cv2.rectangle(display, (x0, y0), (x1, y1), (80, 80, 160), 1)
 
-                # Default to geometric centre; override with the red X if detected.
+                # ── Centre detection ────────────────────────────────────────
                 cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
                 if field_detected:
                     bw, bh = x1 - x0, y1 - y0
-                    mx, my = bw * 0.25, bh * 0.25
+                    mfx, mfy = bw * 0.25, bh * 0.25
                     inner = []
                     for cnt in red_cnts:
                         M = cv2.moments(cnt)
                         if M['m00'] == 0:
                             continue
                         ccx, ccy = M['m10'] / M['m00'], M['m01'] / M['m00']
-                        if x0 + mx <= ccx <= x1 - mx and y0 + my <= ccy <= y1 - my:
+                        if x0 + mfx <= ccx <= x1 - mfx and y0 + mfy <= ccy <= y1 - mfy:
                             inner.append(cnt)
                     if inner:
                         pts = np.vstack(inner)
                         cx = int(np.mean(pts[:, 0, 0]))
                         cy = int(np.mean(pts[:, 0, 1]))
-                cv2.circle(display, (cx, cy), CENTER_RADIUS, (0, 0, 200), 1)
 
-                hx = int(x0 + (x1 - x0) * HOLE_FRAC_X)
-                hy = int(y0 + (y1 - y0) * HOLE_FRAC_Y)
-                cv2.circle(display, (hx, hy), 10, (255, 0, 0), 2)
-                cv2.putText(display, "HOLE", (hx + 12, hy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1)
+                # ── No-go zone (semi-transparent fill) ──────────────────────
+                _nogo = display.copy()
+                cv2.circle(_nogo, (cx, cy), CENTER_RADIUS, (15, 8, 40), -1)
+                cv2.addWeighted(_nogo, 0.45, display, 0.55, 0, display)
+                cv2.circle(display, (cx, cy), CENTER_RADIUS, (90, 55, 160), 1)
 
-                if robot_pos:
-                    cv2.circle(display, robot_pos, 8, (0, 255, 0), -1)
-                    cv2.putText(display, "ROBOT", (robot_pos[0] + 10, robot_pos[1]),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-
-                if not robot_pos:
-                    hint = "Click a white ball (or anywhere) to set robot pos"
-                elif locked_ball_pos is not None:
-                    hint = "LOCKED to ball | SPACE=plan D=debug V=sim S=screenshot Q=quit"
+                # ── Hole ────────────────────────────────────────────────────
+                if hole_override:
+                    hx, hy = hole_override
+                    hole_dot = (180, 80, 200)
+                    hole_ring = (220, 130, 255)
                 else:
-                    hint = "SPACE=plan D=debug V=sim M=masks S=screenshot Q=quit"
-                cv2.putText(display,
-                            "White:{} Orange:{} | {}".format(white_count, orange_count, hint),
-                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                    hx = x0 if field_detected else int(x0 + (x1 - x0) * HOLE_FRAC_X)
+                    hy = (y0 + y1) // 2
+                    hole_dot = (170, 60, 60)
+                    hole_ring = (220, 100, 100)
+                cv2.circle(display, (hx, hy), 10, hole_dot, -1)
+                cv2.circle(display, (hx, hy), 11, hole_ring, 1)
+                hole_label = "HOLE*" if hole_override else "HOLE"
+                cv2.putText(display, hole_label, (hx + 14, hy + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, hole_ring, 1)
 
-                # Live HSV readout at mouse cursor
+                # ── Balls ───────────────────────────────────────────────────
+                white_balls  = [b for b in balls if b['color'] == 'WHITE']
+                orange_balls = [b for b in balls if b['color'] == 'ORANGE']
+                white_count  = len(white_balls)
+                orange_count = len(orange_balls)
+
+                for rank, ball in enumerate(white_balls, 1):
+                    cv2.circle(display, (ball['x'], ball['y']), ball['radius'], (220, 220, 220), 2)
+                    cv2.circle(display, (ball['x'], ball['y']), 3, (255, 255, 255), -1)
+                    cv2.putText(display, str(rank),
+                                (ball['x'] + ball['radius'] + 3, ball['y'] + 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+
+                for rank, ball in enumerate(orange_balls, 1):
+                    cv2.circle(display, (ball['x'], ball['y']), ball['radius'], (0, 150, 255), 2)
+                    cv2.circle(display, (ball['x'], ball['y']), 3, (0, 165, 255), -1)
+                    cv2.putText(display, str(rank),
+                                (ball['x'] + ball['radius'] + 3, ball['y'] + 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 165, 255), 1)
+
+                # ── Robot marker ────────────────────────────────────────────
+                if robot_pos:
+                    if locked_ball_pos is not None:
+                        cv2.circle(display, robot_pos, 14, (0, 215, 255), 1)
+                    cv2.circle(display, robot_pos, 8, (0, 255, 0), -1)
+                    rlabel = "LOCKED" if locked_ball_pos is not None else "ROBOT"
+                    cv2.putText(display, rlabel, (robot_pos[0] + 11, robot_pos[1] + 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 0), 1)
+
+                # ── Top HUD bar ─────────────────────────────────────────────
+                _hud = display.copy()
+                cv2.rectangle(_hud, (0, 0), (fw, 38), (12, 12, 12), -1)
+                cv2.addWeighted(_hud, 0.72, display, 0.28, 0, display)
+
+                cv2.circle(display, (12, 13), 6, (220, 220, 220), -1)
+                cv2.putText(display, "x{}".format(white_count),  (22, 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 200, 200), 1)
+                cv2.circle(display, (58, 13), 6, (0, 150, 255), -1)
+                cv2.putText(display, "x{}".format(orange_count), (68, 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 150, 255), 1)
+
+                if robot_pos is None:
+                    b_col, b_txt = (25, 25, 120), "NO ROBOT"
+                elif mission_ready:
+                    b_col, b_txt = (10,  90,  10), "PLANNED "
+                else:
+                    b_col, b_txt = (10,  75, 100), "READY   "
+                bx = fw // 2 - 44
+                cv2.rectangle(display, (bx, 4), (bx + 88, 30), b_col, -1)
+                cv2.putText(display, b_txt, (bx + 6, 23),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (210, 210, 210), 1)
+
+                fc = (10, 90, 10) if field_detected else (90, 55, 10)
+                ft = "FIELD OK" if field_detected else "NO FIELD"
+                cv2.rectangle(display, (fw - 86, 4), (fw - 4, 30), fc, -1)
+                cv2.putText(display, ft, (fw - 82, 23),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 200, 200), 1)
+
+                # ── Bottom bar (HSV + hints) ─────────────────────────────────
+                _bot = display.copy()
+                cv2.rectangle(_bot, (0, fh - 28), (fw, fh), (12, 12, 12), -1)
+                cv2.addWeighted(_bot, 0.72, display, 0.28, 0, display)
+
                 hsv_live = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                fh, fw   = hsv_live.shape[:2]
-                mx = max(0, min(mouse_pos[0], fw - 1))
-                my = max(0, min(mouse_pos[1], fh - 1))
-                h_c, s_c, v_c = hsv_live[my, mx]
-                cv2.putText(display,
-                            "HSV({},{})= H:{} S:{} V:{}".format(mx, my, h_c, s_c, v_c),
-                            (10, fh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                cv2.drawMarker(display, (mx, my), (0, 255, 255), cv2.MARKER_CROSS, 14, 1)
+                mxc = max(0, min(mouse_pos[0], fw - 1))
+                myc = max(0, min(mouse_pos[1], fh - 1))
+                h_c, s_c, v_c = hsv_live[myc, mxc]
+                if placing_hole:
+                    bot_txt = "Click to place HOLE  |  H = cancel   HSV({},{}) H:{} S:{} V:{}".format(
+                        mxc, myc, h_c, s_c, v_c)
+                elif robot_pos is None:
+                    bot_txt = "Left-click to set robot pos  |  H = place hole   HSV({},{}) H:{} S:{} V:{}".format(
+                        mxc, myc, h_c, s_c, v_c)
+                else:
+                    bot_txt = ("SPACE=plan  D=path  V=sim  H=hole  C=cal  A=auto  M=masks  S=shot  Q=quit"
+                               "   HSV H:{} S:{} V:{}".format(h_c, s_c, v_c))
+                cv2.putText(display, bot_txt,
+                            (6, fh - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (155, 155, 155), 1)
+                cv2.drawMarker(display, (mxc, myc), (0, 255, 255), cv2.MARKER_CROSS, 14, 1)
 
                 cv2.imshow('Ball Detection', display)
 
@@ -231,14 +303,24 @@ class VisionApp:
                     run_auto_calibration(self.cap, self.color_ranges)
                     print("Returned to planning mode.")
 
+                elif key == ord('h'):
+                    if hole_override is not None:
+                        hole_override = None
+                        placing_hole  = False
+                        print("Hole reset to auto position.")
+                    else:
+                        placing_hole = not placing_hole
+                        print("Hole placement mode {}.".format("ON - click to place" if placing_hole else "OFF"))
+
                 elif key == ord(' '):
                     if robot_pos is None:
                         print("Click to set robot position first, then press SPACE.")
                         continue
                     analysis = self.detector.analyze_course(last_frame)
                     print("\nGenerating mission for {} balls...".format(len(analysis['balls'])))
-                    self.mission_commands = self._plan_path(analysis, robot_pos)
+                    self.mission_commands = self._plan_path(analysis, robot_pos, hole_override=hole_override)
                     self.save_mission()
+                    mission_ready = True
                     if hasattr(self, '_last_planner'):
                         debug_vis = self._last_planner.debug_overlay(
                             last_frame,
@@ -267,7 +349,7 @@ class VisionApp:
 
     # ── Path planning ─────────────────────────────────────────────────────────
 
-    def _plan_path(self, analysis, robot_pos, capacity=6):
+    def _plan_path(self, analysis, robot_pos, capacity=6, hole_override=None):
         balls = analysis['balls']
         x_min, y_min, x_max, y_max = analysis['field_bounds']
         cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
@@ -275,10 +357,15 @@ class VisionApp:
         if robot_pos is None:
             robot_pos = (cx, cy)
 
-        dropoff = (
-            int(x_min + (x_max - x_min) * HOLE_FRAC_X),
-            int(y_min + (y_max - y_min) * HOLE_FRAC_Y),
-        )
+        if hole_override is not None:
+            dropoff = hole_override
+        elif analysis['field_detected']:
+            dropoff = (x_min, (y_min + y_max) // 2)
+        else:
+            dropoff = (
+                int(x_min + (x_max - x_min) * HOLE_FRAC_X),
+                int(y_min + (y_max - y_min) * HOLE_FRAC_Y),
+            )
 
         planner = FieldPlanner(
             field_bounds=analysis['field_bounds'],
