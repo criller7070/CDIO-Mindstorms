@@ -31,28 +31,29 @@ class BallDetector:
         """Run all detections and return a single result dict."""
         balls, mask_white, mask_orange = self.detect_balls(frame)
         red_walls    = self.detect_red_walls(frame)
-        field_bounds = self.detect_field_bounds(frame)
         fh, fw = frame.shape[:2]
 
-        # Keep only balls whose centre is at least FIELD_INSET pixels inside the
-        # convex hull of all red wall pixels.  pointPolygonTest returns a signed
-        # distance: positive = inside, negative = outside.  Using the hull (not a
-        # bounding rect) means the check works at any camera angle and handles
-        # gaps in the red-wall detection more gracefully than a rectangle would.
         red_cnts, _ = cv2.findContours(red_walls['mask'],
                                         cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if red_cnts:
+        field_detected = (red_cnts is not None and len(red_cnts) > 0
+                          and self._is_valid_field_mask(red_walls['mask'], fh, fw))
+
+        if field_detected:
             hull = cv2.convexHull(np.vstack(red_cnts))
             balls = [b for b in balls
                      if cv2.pointPolygonTest(
                          hull, (float(b['x']), float(b['y'])), True) >= self.FIELD_INSET]
+            field_bounds = self._bounds_from_mask(red_walls['mask'])
+        else:
+            field_bounds = (20, 20, fw - 20, fh - 20)
 
         return {
-            'balls':        balls,
-            'white_mask':   mask_white,
-            'orange_mask':  mask_orange,
-            'red_walls':    red_walls,
-            'field_bounds': field_bounds,
+            'balls':          balls,
+            'white_mask':     mask_white,
+            'orange_mask':    mask_orange,
+            'red_walls':      red_walls,
+            'field_bounds':   field_bounds,
+            'field_detected': field_detected,
             'frame_h': fh,
             'frame_w': fw,
         }
@@ -103,13 +104,33 @@ class BallDetector:
 
     def detect_field_bounds(self, frame):
         """Return (x_min, y_min, x_max, y_max) pixel bounds of the red field rectangle."""
-        mask = self.detect_red_walls(frame)['mask']
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            x, y, w, h = cv2.boundingRect(np.vstack(contours))
-            return (x, y, x + w, y + h)
         fh, fw = frame.shape[:2]
+        mask = self.detect_red_walls(frame)['mask']
+        if self._is_valid_field_mask(mask, fh, fw):
+            return self._bounds_from_mask(mask)
         return (20, 20, fw - 20, fh - 20)
+
+    @staticmethod
+    def _bounds_from_mask(mask):
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        x, y, w, h = cv2.boundingRect(np.vstack(cnts))
+        return (x, y, x + w, y + h)
+
+    @staticmethod
+    def _is_valid_field_mask(mask, frame_h, frame_w):
+        """True when the red mask looks like a real field boundary, not noise or a false positive."""
+        if int(np.count_nonzero(mask)) < 500:
+            return False
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return False
+        _, _, w, h = cv2.boundingRect(np.vstack(cnts))
+        frame_area = frame_h * frame_w
+        bbox_area  = w * h
+        if not (0.15 * frame_area <= bbox_area <= 0.97 * frame_area):
+            return False
+        aspect = max(w, h) / max(min(w, h), 1)
+        return aspect <= 4.0
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

@@ -140,9 +140,10 @@ class VisionApp:
                     orange_count += ball['color'] == "ORANGE"
 
                 x0, y0, x1, y1 = bounds
-                red_cnts, _ = cv2.findContours(analysis['red_walls']['mask'],
-                                               cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if red_cnts:
+                field_detected = analysis['field_detected']
+                if field_detected:
+                    red_cnts, _ = cv2.findContours(analysis['red_walls']['mask'],
+                                                   cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     hull = cv2.convexHull(np.vstack(red_cnts))
                     cv2.drawContours(display, [hull], -1, (0, 0, 200), 2)
                 else:
@@ -150,9 +151,9 @@ class VisionApp:
 
                 # Default to geometric centre; override with the red X if detected.
                 cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-                if red_cnts:
-                    fw, fh = x1 - x0, y1 - y0
-                    mx, my = fw * 0.25, fh * 0.25
+                if field_detected:
+                    bw, bh = x1 - x0, y1 - y0
+                    mx, my = bw * 0.25, bh * 0.25
                     inner = []
                     for cnt in red_cnts:
                         M = cv2.moments(cnt)

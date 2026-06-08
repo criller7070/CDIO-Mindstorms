@@ -99,6 +99,10 @@ class FieldPlanner:
         gy = max(0, min(self.gh - 1, (int(py) - self.y0) // self.GRID_SCALE))
         return gx, gy
 
+    def _is_in_obstacle(self, px, py):
+        gx, gy = self._to_grid(px, py)
+        return self.grid[gx][gy]
+
     def _to_px(self, gx, gy):
         return gx * self.GRID_SCALE + self.x0, gy * self.GRID_SCALE + self.y0
 
@@ -371,6 +375,24 @@ class FieldPlanner:
 
         return commands
 
+    def _sim_metadata(self, robot_pos, dropoff_pos):
+        """Comment lines that embed geometry so the simulator can draw it correctly."""
+        cx_mm = (self.center[0] - self.x0) / self.px_per_mm
+        cy_mm = (self.center[1] - self.y0) / self.px_per_mm
+        cr_mm = self.center_radius / self.px_per_mm
+        wm_mm = self.wall_margin / self.px_per_mm
+        rx_mm = (robot_pos[0] - self.x0) / self.px_per_mm
+        ry_mm = (robot_pos[1] - self.y0) / self.px_per_mm
+        hx_mm = (dropoff_pos[0] - self.x0) / self.px_per_mm
+        hy_mm = (dropoff_pos[1] - self.y0) / self.px_per_mm
+        return [
+            "# SIM_CENTER: {:.0f} {:.0f}".format(cx_mm, cy_mm),
+            "# SIM_CENTER_R: {:.0f}".format(cr_mm),
+            "# SIM_WALL: {:.0f}".format(wm_mm),
+            "# SIM_START: {:.0f} {:.0f}".format(rx_mm, ry_mm),
+            "# SIM_HOLE: {:.0f} {:.0f}".format(hx_mm, hy_mm),
+        ]
+
     # ------------------------------------------------------------------
     # Multi-trip planning
     # ------------------------------------------------------------------
@@ -431,13 +453,21 @@ class FieldPlanner:
 
         Returns a list of EV3 command strings ready to write to commands.txt.
         """
+        meta = self._sim_metadata(robot_pos, dropoff_pos)
+
+        reachable = [bp for bp in ball_positions if not self._is_in_obstacle(*bp)]
+        skipped = len(ball_positions) - len(reachable)
+        if skipped:
+            print("Skipping {} ball(s) inside obstacles/walls.".format(skipped))
+        ball_positions = reachable
+
         n = len(ball_positions)
         if n == 0:
             path = self.astar(
                 (int(robot_pos[0]), int(robot_pos[1])),
                 (int(dropoff_pos[0]), int(dropoff_pos[1])),
             )
-            cmds = ["SPEED:300"]
+            cmds = ["SPEED:300"] + meta
             if path:
                 trip_cmds, _ = self._segs_to_commands(
                     [path], True, initial_heading_deg, collect_lift_deg, deposit_lift_deg)
@@ -483,7 +513,7 @@ class FieldPlanner:
             return ["STOP"]
 
         # Build commands, threading heading across all trips
-        commands = ["SPEED:300"]
+        commands = ["SPEED:300"] + meta
         heading = float(initial_heading_deg)
 
         # Trip 1 starts from robot_pos

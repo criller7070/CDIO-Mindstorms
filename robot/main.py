@@ -69,7 +69,7 @@ class EV3NavController:
             self.robot = DriveBase(
                 self.left_motor,
                 self.right_motor,
-                wheel_diameter=2.15,  # effective: 43mm sprocket / ~20:1 gear reduction
+                wheel_diameter=21.5,  # effective: 43mm sprocket / ~20:1 gear reduction
                 axle_track=43         # center-to-center between tracks (mm)
             )
             print("[OK] DriveBase initialized")

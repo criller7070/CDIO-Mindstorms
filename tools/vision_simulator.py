@@ -84,6 +84,24 @@ def parse_commands(path):
     return result
 
 
+def parse_sim_metadata(path):
+    """Extract SIM_* geometry hints written by the planner into commands.txt."""
+    meta = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line.startswith('# SIM_'):
+                    continue
+                content = line[2:]  # strip '# '
+                key, _, val = content.partition(':')
+                nums = [float(x) for x in val.split()]
+                meta[key.strip()] = nums
+    except FileNotFoundError:
+        pass
+    return meta
+
+
 # ── Simulator class ───────────────────────────────────────────────────────────
 
 class Simulator:
@@ -100,8 +118,12 @@ class Simulator:
         self.ox = float(FIELD_PAD)
         self.oy = FIELD_PAD + (avail_h - FIELD_HEIGHT_MM * self.scale) / 2.0
 
-        # Default start: dead-centre of field
-        self.start_mm = (FIELD_WIDTH_MM / 2.0, FIELD_HEIGHT_MM / 2.0)
+        # Defaults — overwritten by SIM_* metadata from commands.txt
+        self.start_mm    = (FIELD_WIDTH_MM / 2.0, FIELD_HEIGHT_MM / 2.0)
+        self.center_mm   = (FIELD_WIDTH_MM / 2.0, FIELD_HEIGHT_MM / 2.0)
+        self.center_r_mm = CENTER_RADIUS_MM
+        self.wall_mm     = WALL_MARGIN_MM
+        self.hole_mm     = (FIELD_WIDTH_MM * HOLE_FRAC_X, FIELD_HEIGHT_MM * HOLE_FRAC_Y)
         self.init_heading = float(INITIAL_HEADING_DEG)
 
         self.commands  = []
@@ -128,6 +150,34 @@ class Simulator:
 
     def reload(self):
         self.commands = parse_commands(self.mission_file)
+        meta = parse_sim_metadata(self.mission_file)
+
+        if 'SIM_CENTER' in meta:
+            cx, cy = meta['SIM_CENTER']
+            self.center_mm = (cx, cy)
+        else:
+            self.center_mm = (FIELD_WIDTH_MM / 2.0, FIELD_HEIGHT_MM / 2.0)
+
+        if 'SIM_CENTER_R' in meta:
+            self.center_r_mm = meta['SIM_CENTER_R'][0]
+        else:
+            self.center_r_mm = CENTER_RADIUS_MM
+
+        if 'SIM_WALL' in meta:
+            self.wall_mm = meta['SIM_WALL'][0]
+        else:
+            self.wall_mm = WALL_MARGIN_MM
+
+        if 'SIM_START' in meta:
+            sx, sy = meta['SIM_START']
+            self.start_mm = (sx, sy)
+
+        if 'SIM_HOLE' in meta:
+            hx, hy = meta['SIM_HOLE']
+            self.hole_mm = (hx, hy)
+        else:
+            self.hole_mm = (FIELD_WIDTH_MM * HOLE_FRAC_X, FIELD_HEIGHT_MM * HOLE_FRAC_Y)
+
         self.reset()
 
     def reset(self):
@@ -184,23 +234,22 @@ class Simulator:
         cv2.rectangle(canvas, p0, p1, C_BORDER, 2)
 
         # Wall margin guide
-        m = WALL_MARGIN_MM
+        m = self.wall_mm
         cv2.rectangle(canvas,
                       self._mm_to_canvas(m, m),
                       self._mm_to_canvas(FIELD_WIDTH_MM - m, FIELD_HEIGHT_MM - m),
                       C_MARGIN, 1)
 
         # Centre obstacle
-        cx, cy = self._mm_to_canvas(FIELD_WIDTH_MM / 2, FIELD_HEIGHT_MM / 2)
-        cr = int(CENTER_RADIUS_MM * self.scale)
+        cx, cy = self._mm_to_canvas(*self.center_mm)
+        cr = int(self.center_r_mm * self.scale)
         cv2.circle(canvas, (cx, cy), cr, C_OBST, -1)
         cv2.circle(canvas, (cx, cy), cr, C_OBST_E, 1)
         cv2.putText(canvas, "X", (cx - 6, cy + 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_OBST_E, 1)
 
         # Hole
-        hx = int(self.ox + FIELD_WIDTH_MM * HOLE_FRAC_X * self.scale)
-        hy = int(self.oy + FIELD_HEIGHT_MM * HOLE_FRAC_Y * self.scale)
+        hx, hy = self._mm_to_canvas(*self.hole_mm)
         cv2.circle(canvas, (hx, hy), int(15 * self.scale + 3), C_HOLE, -1)
         cv2.circle(canvas, (hx, hy), int(15 * self.scale + 3), (120, 120, 255), 1)
         cv2.putText(canvas, "HOLE", (hx + int(15 * self.scale + 5), hy + 5),
