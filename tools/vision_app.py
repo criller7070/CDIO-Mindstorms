@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 import glob
 import re
+import subprocess
+import sys
 
 from tools_path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 from vision_config import (
@@ -54,6 +56,7 @@ class VisionApp:
         print("  A           : auto-calibration (click to sample colours)")
         print("  SPACE       : analyse frame and generate mission")
         print("  D           : show planned path overlay")
+        print("  V           : open simulator window")
         print("  S           : take screenshot")
         print("  M           : toggle mask windows")
         print("  Q           : quit")
@@ -178,9 +181,9 @@ class VisionApp:
                 if not robot_pos:
                     hint = "Click a white ball (or anywhere) to set robot pos"
                 elif locked_ball_pos is not None:
-                    hint = "LOCKED to ball | SPACE=plan D=debug S=screenshot Q=quit"
+                    hint = "LOCKED to ball | SPACE=plan D=debug V=sim S=screenshot Q=quit"
                 else:
-                    hint = "SPACE=plan D=debug M=masks S=screenshot Q=quit"
+                    hint = "SPACE=plan D=debug V=sim M=masks S=screenshot Q=quit"
                 cv2.putText(display,
                             "White:{} Orange:{} | {}".format(white_count, orange_count, hint),
                             (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
@@ -249,6 +252,11 @@ class VisionApp:
                 elif key == ord('d') and debug_vis is not None:
                     cv2.imshow('Planned Path', debug_vis)
 
+                elif key == ord('v'):
+                    sim_path = os.path.join(os.path.dirname(__file__), 'vision_simulator.py')
+                    subprocess.Popen([sys.executable, sim_path])
+                    print("Simulator launched.")
+
                 elif key == ord('s'):
                     screenshot_num += 1
                     self._save_screenshot(screenshot_num, frame, analysis, display)
@@ -295,6 +303,8 @@ class VisionApp:
         self._last_planner        = planner
         self._last_ball_positions = ball_positions
         self._last_dropoff        = dropoff
+        self._last_path_segs      = getattr(planner, '_debug_path_segs', [])
+        self._last_ball_order     = getattr(planner, '_debug_ball_order', [])
         return commands
 
     # ── Persistence ───────────────────────────────────────────────────────────

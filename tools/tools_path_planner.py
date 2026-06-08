@@ -450,19 +450,22 @@ class FieldPlanner:
 
         # Precompute hole→cluster→hole routes for every cluster
         hole_segs = []
+        hole_ball_orders = []
         for cluster in clusters:
             pts = [ball_positions[j] for j in cluster]
-            _, segs = self.optimal_route(dropoff_pos, pts, dropoff_pos)
+            local_order, segs = self.optimal_route(dropoff_pos, pts, dropoff_pos)
             hole_segs.append(segs)
+            hole_ball_orders.append([cluster[i] for i in local_order])
 
         # Choose the best first trip (try all k clusters as the first)
         best_cost = float('inf')
         best_first = 0
         best_first_segs = None
+        best_first_order = None
 
         for fi in range(k):
             pts = [ball_positions[j] for j in clusters[fi]]
-            _, segs = self.optimal_route(robot_pos, pts, dropoff_pos)
+            local_order, segs = self.optimal_route(robot_pos, pts, dropoff_pos)
             if segs is None:
                 continue
             cost = sum(self._path_length(s) for s in segs)
@@ -473,6 +476,7 @@ class FieldPlanner:
                 best_cost = cost
                 best_first = fi
                 best_first_segs = segs
+                best_first_order = [clusters[fi][i] for i in local_order]
 
         if best_first_segs is None:
             print("WARNING: could not plan any trip – check field bounds / obstacles.")
@@ -489,6 +493,8 @@ class FieldPlanner:
 
         # Remaining trips start from the hole
         trip_num = 2
+        debug_segs = list(best_first_segs)
+        debug_order = list(best_first_order or [])
         for i in range(k):
             if i == best_first:
                 continue
@@ -498,8 +504,12 @@ class FieldPlanner:
                 trip_cmds, heading = self._segs_to_commands(
                     segs, is_last, heading, collect_lift_deg, deposit_lift_deg)
                 commands += ["# Trip {}/{} – cluster {}".format(trip_num, k, i)] + trip_cmds
+                debug_segs.extend(segs)
+                debug_order.extend(hole_ball_orders[i])
             trip_num += 1
 
+        self._debug_path_segs = debug_segs
+        self._debug_ball_order = debug_order
         return commands
 
     # ------------------------------------------------------------------
