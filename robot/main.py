@@ -69,7 +69,7 @@ class EV3NavController:
             self.robot = DriveBase(
                 self.left_motor,
                 self.right_motor,
-                wheel_diameter=21.5,  # effective: 43mm sprocket / ~20:1 gear reduction
+                wheel_diameter=6.0,   # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)
                 axle_track=43         # center-to-center between tracks (mm)
             )
             print("[OK] DriveBase initialized")
@@ -189,8 +189,8 @@ class EV3NavController:
                 if value != 0:
                     self._log("TURN {} deg".format(value))
                     if self.robot:
-                        # Calibrated: 47 DriveBase degrees = 90 physical degrees
-                        scaled = int(round(value * 470.0 / 90.0))
+                        # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
+                        scaled = int(round(value * 332.0 / 90.0))
                         self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
