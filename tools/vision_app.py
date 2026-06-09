@@ -7,6 +7,7 @@ Run directly:  python vision_app.py
 """
 import os
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+import math
 import cv2
 import numpy as np
 import glob
@@ -19,6 +20,7 @@ from vision_config import (
     CAMERA_INDEX, MISSION_FILE, SCREENSHOT_DIR, MASK_DIR,
     WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM,
     load_color_ranges,
 )
 from vision_detector import BallDetector
@@ -197,13 +199,31 @@ class VisionApp:
                                 (ball['x'] + ball['radius'] + 3, ball['y'] + 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 165, 255), 1)
 
-                # ── Robot marker ────────────────────────────────────────────
+                # ── Robot marker (oriented box) ─────────────────────────────
                 if robot_pos:
+                    _px_per_mm = ((x1 - x0) / FIELD_WIDTH_MM + (y1 - y0) / FIELD_HEIGHT_MM) / 2.0
+                    _half_l = ROBOT_LENGTH_MM * _px_per_mm / 2.0
+                    _half_w = ROBOT_WIDTH_MM  * _px_per_mm / 2.0
+                    _rad = math.radians(INITIAL_HEADING_DEG)
+                    _fwd = (math.cos(_rad), math.sin(_rad))
+                    _rgt = (-math.sin(_rad), math.cos(_rad))
+                    _rx, _ry = robot_pos
+                    _corners = np.array([
+                        [_rx + _fwd[0]*_half_l - _rgt[0]*_half_w, _ry + _fwd[1]*_half_l - _rgt[1]*_half_w],
+                        [_rx + _fwd[0]*_half_l + _rgt[0]*_half_w, _ry + _fwd[1]*_half_l + _rgt[1]*_half_w],
+                        [_rx - _fwd[0]*_half_l + _rgt[0]*_half_w, _ry - _fwd[1]*_half_l + _rgt[1]*_half_w],
+                        [_rx - _fwd[0]*_half_l - _rgt[0]*_half_w, _ry - _fwd[1]*_half_l - _rgt[1]*_half_w],
+                    ], dtype=np.int32)
+                    _body = display.copy()
+                    cv2.fillPoly(_body, [_corners], (0, 55, 0))
+                    cv2.addWeighted(_body, 0.45, display, 0.55, 0, display)
+                    cv2.drawContours(display, [_corners], 0, (0, 220, 0), 2)
+                    # Front face highlighted in bright green
+                    cv2.line(display, tuple(_corners[0]), tuple(_corners[1]), (80, 255, 80), 3)
                     if locked_ball_pos is not None:
-                        cv2.circle(display, robot_pos, 14, (0, 215, 255), 1)
-                    cv2.circle(display, robot_pos, 8, (0, 255, 0), -1)
+                        cv2.drawContours(display, [_corners], 0, (0, 215, 255), 1)
                     rlabel = "LOCKED" if locked_ball_pos is not None else "ROBOT"
-                    cv2.putText(display, rlabel, (robot_pos[0] + 11, robot_pos[1] + 4),
+                    cv2.putText(display, rlabel, (_rx + int(_half_w) + 4, _ry + 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 0), 1)
 
                 # ── Top HUD bar ─────────────────────────────────────────────
@@ -362,6 +382,8 @@ class VisionApp:
             field_width_mm=FIELD_WIDTH_MM,
             field_height_mm=FIELD_HEIGHT_MM,
             field_hull=analysis['field_hull'],
+            robot_width_mm=ROBOT_WIDTH_MM,
+            robot_length_mm=ROBOT_LENGTH_MM,
         )
 
         ball_positions = [(b['x'], b['y']) for b in balls]

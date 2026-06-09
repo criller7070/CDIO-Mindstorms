@@ -39,7 +39,9 @@ class FieldPlanner:
                  center_radius=60,
                  field_width_mm=FIELD_WIDTH_MM,
                  field_height_mm=FIELD_HEIGHT_MM,
-                 field_hull=None):
+                 field_hull=None,
+                 robot_width_mm=0,
+                 robot_length_mm=0):
         """
         field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
         center_pos:      (cx, cy) pixel coords of center crosshair
@@ -66,6 +68,10 @@ class FieldPlanner:
         px_per_mm_y = field_px_h / field_height_mm
         self.px_per_mm = (px_per_mm_x + px_per_mm_y) / 2.0
 
+        # Robot body clearance (added to obstacle margins so the body stays clear)
+        self.robot_half_width_px   = (robot_width_mm  / 2.0) * self.px_per_mm
+        self.robot_half_length_mm  = robot_length_mm  / 2.0
+
         self.gw = field_px_w // self.GRID_SCALE + 1
         self.gh = field_px_h // self.GRID_SCALE + 1
 
@@ -77,10 +83,10 @@ class FieldPlanner:
 
     def _build_grid(self):
         gs = self.GRID_SCALE
-        margin = max(1, self.wall_margin // gs)
+        margin = max(1, int(self.wall_margin + self.robot_half_width_px) // gs)
         cx = (self.center[0] - self.x0) // gs
         cy = (self.center[1] - self.y0) // gs
-        cr = max(1, self.center_radius // gs)
+        cr = max(1, int(self.center_radius + self.robot_half_width_px) // gs)
 
         grid = [[False] * self.gh for _ in range(self.gw)]
         for gx in range(self.gw):
@@ -423,6 +429,7 @@ class FieldPlanner:
             is_collect = leg < n_collect
             pts = self.simplify(seg, eps=8)
 
+            leg_cmds = []
             for i in range(1, len(pts)):
                 x0, y0 = pts[i - 1]
                 x1, y1 = pts[i]
@@ -434,12 +441,22 @@ class FieldPlanner:
                 target_heading = float(np.degrees(np.arctan2(dy, dx)))
                 turn = (target_heading - heading + 180.0) % 360.0 - 180.0
                 if abs(turn) > 2:
-                    commands.append("TURN:{}".format(int(round(turn))))
+                    leg_cmds.append("TURN:{}".format(int(round(turn))))
                     heading = target_heading
 
                 dist_mm = max(1, int(dist_px / self.px_per_mm))
-                commands.append("FORWARD:{}".format(dist_mm))
+                leg_cmds.append("FORWARD:{}".format(dist_mm))
 
+            # Shorten last FORWARD so the robot's front face (not centre) reaches the ball
+            if is_collect and self.robot_half_length_mm > 0:
+                for j in range(len(leg_cmds) - 1, -1, -1):
+                    if leg_cmds[j].startswith("FORWARD:"):
+                        old_val = int(leg_cmds[j].split(":")[1])
+                        new_val = max(1, old_val - int(round(self.robot_half_length_mm)))
+                        leg_cmds[j] = "FORWARD:{}".format(new_val)
+                        break
+
+            commands.extend(leg_cmds)
             if not is_collect and is_last_trip:
                 commands.append("STOP")
 

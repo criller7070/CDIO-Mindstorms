@@ -25,6 +25,7 @@ from vision_config import (
     MISSION_FILE,
     INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM,
 )
 from tools_path_planner import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
@@ -302,13 +303,25 @@ class Simulator:
         rx, ry, rh, _ = self.positions[idx]
         rpx, rpy = self._mm_to_canvas(rx, ry)
 
-        arrow = 22
-        rad   = math.radians(rh)
-        ax    = int(rpx + arrow * math.cos(rad))
-        ay    = int(rpy + arrow * math.sin(rad))
+        half_l = ROBOT_LENGTH_MM * self.scale / 2.0
+        half_w = ROBOT_WIDTH_MM  * self.scale / 2.0
+        rad    = math.radians(rh)
+        fwd    = (math.cos(rad), math.sin(rad))
+        rgt    = (-math.sin(rad), math.cos(rad))
 
-        cv2.circle(canvas, (rpx, rpy), 9, C_ROBOT, -1)
-        cv2.arrowedLine(canvas, (rpx, rpy), (ax, ay), C_ROBOT, 2, tipLength=0.45)
+        corners = np.array([
+            [rpx + fwd[0]*half_l - rgt[0]*half_w, rpy + fwd[1]*half_l - rgt[1]*half_w],
+            [rpx + fwd[0]*half_l + rgt[0]*half_w, rpy + fwd[1]*half_l + rgt[1]*half_w],
+            [rpx - fwd[0]*half_l + rgt[0]*half_w, rpy - fwd[1]*half_l + rgt[1]*half_w],
+            [rpx - fwd[0]*half_l - rgt[0]*half_w, rpy - fwd[1]*half_l - rgt[1]*half_w],
+        ], dtype=np.int32)
+
+        _body = canvas.copy()
+        cv2.fillPoly(_body, [corners], (0, 60, 0))
+        cv2.addWeighted(_body, 0.5, canvas, 0.5, 0, canvas)
+        cv2.drawContours(canvas, [corners], 0, C_ROBOT, 2)
+        # Front face highlighted
+        cv2.line(canvas, tuple(corners[0]), tuple(corners[1]), (100, 255, 100), 3)
 
     def _draw_panel(self, canvas):
         panel_x = CANVAS_W - SIDE_W

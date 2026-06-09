@@ -20,6 +20,10 @@ INITIAL_HEADING_DEG = -90
 HOLE_FRAC_X         = 0.05   # left hole: 5 % from left edge
 HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
 
+# ── Robot physical dimensions (mm) ────────────────────────────────────────────
+ROBOT_WIDTH_MM  = 240   # side-to-side across tracks
+ROBOT_LENGTH_MM = 370   # front bumper to back
+
 # ── HSV calibration ───────────────────────────────────────────────────────────
 COLOR_RANGES_FILE = os.path.join(os.path.dirname(__file__), "color_ranges.json")
 
