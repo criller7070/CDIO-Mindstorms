@@ -66,10 +66,11 @@ class EV3NavController:
         
         # Try DriveBase with minimal parameters
         try:
+            # not working idk why
             self.robot = DriveBase(
                 self.left_motor,
                 self.right_motor,
-                wheel_diameter=17.0,   # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)
+                wheel_diameter=6.0,    # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)=6.035≈6
                 axle_track=43         # center-to-center between tracks (mm)
             )
             print("[OK] DriveBase initialized")
