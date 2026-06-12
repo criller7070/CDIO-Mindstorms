@@ -12,7 +12,7 @@ import time
 sound = Sound()
 tank = MoveTank(OUTPUT_A, OUTPUT_B)
 
-sound.speak("Tank test starting")
+sound.speak("tight pussy girl")
 time.sleep(1)
 
 # --- Forward 2 rotations ---
@@ -22,7 +22,7 @@ time.sleep(0.5)
 
 # --- Turn right: left motor moves, right stays ---
 print("Turning right 1 rotation")
-tank.on_for_rotations(SpeedPercent(50), SpeedPercent(-50), 1)
+tank.on_for_rotations(SpeedPercent(100), SpeedPercent(-100), 100)
 time.sleep(0.5)
 
 # --- Reverse 2 rotations ---

@@ -154,7 +154,7 @@ class EV3NavController:
                 if value > 0:
                     self._log("FWD {} mm".format(value))
                     if self.robot:
-                        self.robot.straight(-value)
+                        self.robot.straight(-value / 3.33)
                     else:
                         # Fallback: drive both motors in parallel
                         rotations = (value * 360) // 62  # Calibrated: 62mm per wheel rotation at 17mm diameter
@@ -191,13 +191,14 @@ class EV3NavController:
                     self._log("TURN {} deg".format(value))
                     if self.robot:
                         # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
-                        scaled = int(round(value * 1473.0 / 90.0))
+                        scaled = int(round(value * 1.3633))
+			#scaled = int((round(value * 736.5 / 90.0))/4)
                         self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
                         # Calibrated: 47 DriveBase degrees = 90 physical degrees
-                        motor_angle = int(round(abs(value) * 1473.0 / 90.0)) * 4
+                        motor_angle = int(round(abs(value) * 736.5 / 90.0))
                         if value > 0:
                             # Turn right: left forward, right backward
                             self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
@@ -295,7 +296,7 @@ class EV3NavController:
                     if value > 0:
                         self._log("LIFT UP {} deg".format(value))
                         # Calibrated: 130 motor degrees = 45 physical degrees
-                        scaled = int(round(value * 130.0 / 45.0))
+                        scaled = value #int(round(value * 130.0 / 45.0))
                         self.lift_motor.run_angle(-self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
