@@ -110,14 +110,14 @@ class Simulator:
     def __init__(self, mission_file=MISSION_FILE):
         self.mission_file = mission_file
 
-        # Scale field to fit available canvas area
-        avail_w = CANVAS_W - SIDE_W - 2 * FIELD_PAD
-        avail_h = CANVAS_H - 2 * FIELD_PAD
-        self.scale = min(avail_w / FIELD_WIDTH_MM, avail_h / FIELD_HEIGHT_MM)
-
-        # Top-left of field on canvas
-        self.ox = float(FIELD_PAD)
-        self.oy = FIELD_PAD + (avail_h - FIELD_HEIGHT_MM * self.scale) / 2.0
+        # Layout — scale, canvas size and origin are (re)computed in reload()
+        # once the SIM_PXPERMM hint is known, so the simulator renders at the
+        # same scale as the camera/debug window.  These are placeholders.
+        self.scale    = 0.4
+        self.canvas_w = CANVAS_W
+        self.canvas_h = CANVAS_H
+        self.ox       = float(FIELD_PAD)
+        self.oy       = float(FIELD_PAD)
 
         # Defaults — overwritten by SIM_* metadata from commands.txt
         self.start_mm    = (FIELD_WIDTH_MM / 2.0, FIELD_HEIGHT_MM / 2.0)
@@ -148,11 +148,37 @@ class Simulator:
         return ((cx - self.ox) / self.scale,
                 (cy - self.oy) / self.scale)
 
+    def _compute_layout(self):
+        """Size the canvas to the field at the current scale, plus side panel.
+
+        The field is rendered at exactly self.scale (px/mm); the canvas grows
+        to fit it.  A minimum height keeps the command panel readable.
+        """
+        field_w_px = FIELD_WIDTH_MM * self.scale
+        field_h_px = FIELD_HEIGHT_MM * self.scale
+        self.canvas_w = int(max(field_w_px + SIDE_W + 2 * FIELD_PAD, 640))
+        self.canvas_h = int(max(field_h_px + 2 * FIELD_PAD + 30, 700))
+        self.ox = float(FIELD_PAD)
+        # Centre the field vertically in the area above the status bar
+        usable_h = self.canvas_h - 30
+        self.oy = max(float(FIELD_PAD), (usable_h - field_h_px) / 2.0)
+
     # ── Simulation ────────────────────────────────────────────────────────────
 
     def reload(self):
         self.commands = parse_commands(self.mission_file)
         meta = parse_sim_metadata(self.mission_file)
+
+        # Match the camera/debug-window scale when the planner provides it, so
+        # the same physical distance occupies the same number of screen pixels
+        # in both windows.  Otherwise fall back to fit-to-fixed-canvas.
+        if 'SIM_PXPERMM' in meta:
+            self.scale = meta['SIM_PXPERMM'][0]
+        else:
+            avail_w = CANVAS_W - SIDE_W - 2 * FIELD_PAD
+            avail_h = CANVAS_H - 2 * FIELD_PAD
+            self.scale = min(avail_w / FIELD_WIDTH_MM, avail_h / FIELD_HEIGHT_MM)
+        self._compute_layout()
 
         if 'SIM_CENTER' in meta:
             cx, cy = meta['SIM_CENTER']
@@ -223,7 +249,7 @@ class Simulator:
     # ── Drawing ───────────────────────────────────────────────────────────────
 
     def draw(self):
-        canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
+        canvas = np.zeros((self.canvas_h, self.canvas_w, 3), dtype=np.uint8)
         canvas[:] = C_BG
 
         self._draw_field(canvas)
@@ -236,23 +262,27 @@ class Simulator:
         return canvas
 
     def _draw_field(self, canvas):
+        m = self.wall_mm
+        inner0 = self._mm_to_canvas(m, m)
+        inner1 = self._mm_to_canvas(FIELD_WIDTH_MM - m, FIELD_HEIGHT_MM - m)
+
         if self.hull_mm:
             hull_pts = np.array([self._mm_to_canvas(x, y) for x, y in self.hull_mm],
                                 dtype=np.int32)
-            cv2.fillPoly(canvas, [hull_pts], C_FIELD)
-            cv2.polylines(canvas, [hull_pts], True, C_BORDER, 2)
+            # Fill entire hull with wall-margin colour, then paint navigable interior
+            cv2.fillPoly(canvas, [hull_pts], C_MARGIN)
+            cv2.rectangle(canvas, inner0, inner1, C_FIELD, -1)
+            # Thick hull outline = the physical wall
+            cv2.polylines(canvas, [hull_pts], True, C_BORDER, 5)
         else:
             p0 = self._mm_to_canvas(0, 0)
             p1 = self._mm_to_canvas(FIELD_WIDTH_MM, FIELD_HEIGHT_MM)
-            cv2.rectangle(canvas, p0, p1, C_FIELD, -1)
-            cv2.rectangle(canvas, p0, p1, C_BORDER, 2)
+            cv2.rectangle(canvas, p0, p1, C_MARGIN, -1)
+            cv2.rectangle(canvas, inner0, inner1, C_FIELD, -1)
+            cv2.rectangle(canvas, p0, p1, C_BORDER, 5)
 
-        # Wall margin guide
-        m = self.wall_mm
-        cv2.rectangle(canvas,
-                      self._mm_to_canvas(m, m),
-                      self._mm_to_canvas(FIELD_WIDTH_MM - m, FIELD_HEIGHT_MM - m),
-                      C_MARGIN, 1)
+        # Thin inner boundary line to mark navigable edge
+        cv2.rectangle(canvas, inner0, inner1, C_MARGIN, 1)
 
         # Centre obstacle
         cx, cy = self._mm_to_canvas(*self.center_mm)
@@ -324,9 +354,9 @@ class Simulator:
         cv2.line(canvas, tuple(corners[0]), tuple(corners[1]), (100, 255, 100), 3)
 
     def _draw_panel(self, canvas):
-        panel_x = CANVAS_W - SIDE_W
-        cv2.rectangle(canvas, (panel_x, 0), (CANVAS_W, CANVAS_H - 30), (18, 18, 18), -1)
-        cv2.line(canvas, (panel_x, 0), (panel_x, CANVAS_H), (55, 55, 55), 1)
+        panel_x = self.canvas_w - SIDE_W
+        cv2.rectangle(canvas, (panel_x, 0), (self.canvas_w, self.canvas_h - 30), (18, 18, 18), -1)
+        cv2.line(canvas, (panel_x, 0), (panel_x, self.canvas_h), (55, 55, 55), 1)
 
         cv2.putText(canvas, "COMMANDS  ({}/{})".format(
             self.step_idx, len(self.positions) - 1),
@@ -366,7 +396,7 @@ class Simulator:
             if i == last_exe:
                 cv2.rectangle(canvas,
                                (panel_x + 2, ry - 2),
-                               (CANVAS_W - 2, ry + 18),
+                               (self.canvas_w - 2, ry + 18),
                                (35, 55, 35), -1)
                 color = C_HI
 
@@ -374,15 +404,14 @@ class Simulator:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
 
     def _draw_status(self, canvas):
-        panel_x = CANVAS_W - SIDE_W
-        cv2.rectangle(canvas, (0, CANVAS_H - 30), (CANVAS_W, CANVAS_H), (18, 18, 18), -1)
-        cv2.line(canvas, (0, CANVAS_H - 30), (CANVAS_W, CANVAS_H - 30), (55, 55, 55), 1)
+        cv2.rectangle(canvas, (0, self.canvas_h - 30), (self.canvas_w, self.canvas_h), (18, 18, 18), -1)
+        cv2.line(canvas, (0, self.canvas_h - 30), (self.canvas_w, self.canvas_h - 30), (55, 55, 55), 1)
 
         speed_fps = int(round(1.0 / max(self.anim_speed, 0.001)))
         anim_txt  = "PLAYING  {}/s".format(speed_fps) if self.animating else "PAUSED"
         status    = ("SPACE=step  BKSP=back  A=play  E=end  0=start  +/-=speed  "
                      "R=reload  Q=quit  |  {}".format(anim_txt))
-        cv2.putText(canvas, status, (6, CANVAS_H - 9),
+        cv2.putText(canvas, status, (6, self.canvas_h - 9),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, C_TEXT, 1)
 
     # ── Main loop ─────────────────────────────────────────────────────────────

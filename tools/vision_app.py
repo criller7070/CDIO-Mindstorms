@@ -168,6 +168,11 @@ class VisionApp:
                     hx, hy = hole_override
                     hole_dot = (180, 80, 200)
                     hole_ring = (220, 130, 255)
+                elif hasattr(self, '_last_dropoff') and not hole_override:
+                    # After planning: show the snapped navigable position
+                    hx, hy = self._last_dropoff
+                    hole_dot = (170, 60, 60)
+                    hole_ring = (220, 100, 100)
                 else:
                     hx = x0 if field_detected else int(x0 + (x1 - x0) * HOLE_FRAC_X)
                     hy = (y0 + y1) // 2
@@ -362,17 +367,23 @@ class VisionApp:
         if robot_pos is None:
             robot_pos = center_pos
 
+        wall_margin = analysis['wall_margin'] or WALL_MARGIN
+
+        # Compute intended hole position (may still be in obstacle zone)
         if hole_override is not None:
-            dropoff = hole_override
+            raw_dropoff = hole_override
+            dx = min(hole_override[0] - x_min, x_max - hole_override[0])
+            dy = min(hole_override[1] - y_min, y_max - hole_override[1])
+            face_deg = 180.0 if dx <= dy else (270.0 if hole_override[1] < (y_min + y_max) / 2 else 90.0)
         elif analysis['field_detected']:
-            dropoff = (x_min, (y_min + y_max) // 2)
+            raw_dropoff = (x_min, (y_min + y_max) // 2)
+            face_deg = 180.0  # hole is on the left wall
         else:
-            dropoff = (
+            raw_dropoff = (
                 int(x_min + (x_max - x_min) * HOLE_FRAC_X),
                 int(y_min + (y_max - y_min) * HOLE_FRAC_Y),
             )
-
-        wall_margin = analysis['wall_margin'] or WALL_MARGIN
+            face_deg = 180.0 if HOLE_FRAC_X < 0.5 else 0.0
 
         planner = FieldPlanner(
             field_bounds=analysis['field_bounds'],
@@ -385,6 +396,9 @@ class VisionApp:
             robot_width_mm=ROBOT_WIDTH_MM,
             robot_length_mm=ROBOT_LENGTH_MM,
         )
+
+        # Snap to nearest navigable cell so display and path endpoint match exactly
+        dropoff = planner.snap_to_navigable(*raw_dropoff)
 
         ball_positions = [(b['x'], b['y']) for b in balls]
         print("Planning {} ball(s), capacity {}, hole at {}...".format(
@@ -399,6 +413,7 @@ class VisionApp:
             dropoff_pos=dropoff,
             capacity=capacity,
             initial_heading_deg=INITIAL_HEADING_DEG,
+            face_deg=face_deg,
         )
 
         self._last_planner        = planner

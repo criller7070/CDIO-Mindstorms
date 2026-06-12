@@ -136,6 +136,12 @@ class FieldPlanner:
                         return nx, ny
         return gx, gy
 
+    def snap_to_navigable(self, px, py):
+        """Return pixel coords of the nearest obstacle-free cell to (px, py)."""
+        gx, gy = self._to_grid(px, py)
+        free_gx, free_gy = self._nearest_free(gx, gy)
+        return self._to_px(free_gx, free_gy)
+
     # ------------------------------------------------------------------
     # A* search
     # ------------------------------------------------------------------
@@ -390,7 +396,9 @@ class FieldPlanner:
         cx_mm = (self.center[0] - self.x0) / self.px_per_mm
         cy_mm = (self.center[1] - self.y0) / self.px_per_mm
         cr_mm = self.center_radius / self.px_per_mm
-        wm_mm = self.wall_margin / self.px_per_mm
+        # Use the effective obstacle margin (wall keepout + robot body clearance)
+        # so the simulator's margin band matches the actual navigable boundary.
+        wm_mm = (self.wall_margin + self.robot_half_width_px) / self.px_per_mm
         rx_mm = (robot_pos[0] - self.x0) / self.px_per_mm
         ry_mm = (robot_pos[1] - self.y0) / self.px_per_mm
         hx_mm = (dropoff_pos[0] - self.x0) / self.px_per_mm
@@ -401,6 +409,9 @@ class FieldPlanner:
             "# SIM_WALL: {:.0f}".format(wm_mm),
             "# SIM_START: {:.0f} {:.0f}".format(rx_mm, ry_mm),
             "# SIM_HOLE: {:.0f} {:.0f}".format(hx_mm, hy_mm),
+            # Camera pixels-per-mm so the simulator can render at the exact
+            # same scale as the debug overlay (same physical mm → same screen px).
+            "# SIM_PXPERMM: {:.5f}".format(self.px_per_mm),
         ]
         if self._field_hull is not None:
             pts = self._field_hull.reshape(-1, 2)
@@ -416,11 +427,14 @@ class FieldPlanner:
     # Multi-trip planning
     # ------------------------------------------------------------------
 
-    def _segs_to_commands(self, path_segs, is_last_trip, heading):
+    def _segs_to_commands(self, path_segs, is_last_trip, heading, face_deg=None):
         """
         Convert one trip's path segments to EV3 commands.
         Tracks and returns the robot's final heading so the next trip
         can continue without a spurious TURN at the join.
+
+        face_deg: if set, a TURN to this heading is inserted before STOP on
+                  the last trip so the robot faces the hole when it arrives.
         """
         commands = []
         n_collect = len(path_segs) - 1
@@ -447,23 +461,39 @@ class FieldPlanner:
                 dist_mm = max(1, int(dist_px / self.px_per_mm))
                 leg_cmds.append("FORWARD:{}".format(dist_mm))
 
-            # Shorten last FORWARD so the robot's front face (not centre) reaches the ball
-            if is_collect and self.robot_half_length_mm > 0:
+            # Split the last FORWARD so the robot pauses with its front face at
+            # the ball (collect point), then advances the remaining half-length
+            # to the ball centre.  Splitting keeps the net distance intact so
+            # the robot stays on the planned path and still reaches the hole —
+            # the old code subtracted the half-length outright, which made every
+            # collect leg fall short and accumulated into a large end-of-route
+            # drift.  (Drop a LIFT_DOWN/LIFT_UP between the two FORWARDs here
+            # once collection commands are wired in.)
+            half_len = int(round(self.robot_half_length_mm))
+            if is_collect and half_len > 0:
                 for j in range(len(leg_cmds) - 1, -1, -1):
                     if leg_cmds[j].startswith("FORWARD:"):
                         old_val = int(leg_cmds[j].split(":")[1])
-                        new_val = max(1, old_val - int(round(self.robot_half_length_mm)))
-                        leg_cmds[j] = "FORWARD:{}".format(new_val)
+                        if old_val > half_len:
+                            leg_cmds[j:j + 1] = [
+                                "FORWARD:{}".format(old_val - half_len),
+                                "FORWARD:{}".format(half_len),
+                            ]
                         break
 
             commands.extend(leg_cmds)
             if not is_collect and is_last_trip:
+                if face_deg is not None:
+                    turn = (face_deg - heading + 180.0) % 360.0 - 180.0
+                    if abs(turn) > 2:
+                        commands.append("TURN:{}".format(int(round(turn))))
+                        heading = face_deg
                 commands.append("STOP")
 
         return commands, heading
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
-                   capacity=6, initial_heading_deg=0):
+                   capacity=6, initial_heading_deg=0, face_deg=None):
         """
         Capacity-aware multi-trip planner. Handles any number of balls.
 
@@ -541,7 +571,7 @@ class FieldPlanner:
 
         # Trip 1 starts from robot_pos
         trip_cmds, heading = self._segs_to_commands(
-            best_first_segs, k == 1, heading)
+            best_first_segs, k == 1, heading, face_deg=face_deg if k == 1 else None)
         commands += ["# Trip 1/{} – cluster {}".format(k, best_first)] + trip_cmds
 
         # Remaining trips start from the hole
@@ -555,7 +585,7 @@ class FieldPlanner:
             if segs:
                 is_last = (trip_num == k)
                 trip_cmds, heading = self._segs_to_commands(
-                    segs, is_last, heading)
+                    segs, is_last, heading, face_deg=face_deg if is_last else None)
                 commands += ["# Trip {}/{} – cluster {}".format(trip_num, k, i)] + trip_cmds
                 debug_segs.extend(segs)
                 debug_order.extend(hole_ball_orders[i])
