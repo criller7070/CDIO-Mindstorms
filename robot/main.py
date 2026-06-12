@@ -191,7 +191,7 @@ class EV3NavController:
                     self._log("TURN {} deg".format(value))
                     if self.robot:
                         # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
-                        scaled = int(round(value * 1.3633))
+                        scaled = int(round(value * 1.3198))
 			#scaled = int((round(value * 736.5 / 90.0))/4)
                         self.robot.turn(scaled)
                     else:
