@@ -20,7 +20,7 @@ from vision_config import (
     CAMERA_INDEX, MISSION_FILE, SCREENSHOT_DIR, MASK_DIR,
     WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
-    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
     load_color_ranges,
 )
 from vision_detector import BallDetector
@@ -395,6 +395,7 @@ class VisionApp:
             field_hull=analysis['field_hull'],
             robot_width_mm=ROBOT_WIDTH_MM,
             robot_length_mm=ROBOT_LENGTH_MM,
+            pivot_offset_mm=ROBOT_PIVOT_OFFSET_MM,
         )
 
         # Snap to nearest navigable cell so display and path endpoint match exactly

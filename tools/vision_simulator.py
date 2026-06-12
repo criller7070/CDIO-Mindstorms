@@ -25,7 +25,7 @@ from vision_config import (
     MISSION_FILE,
     INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
-    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
 )
 from tools_path_planner import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
@@ -127,6 +127,7 @@ class Simulator:
         self.hole_mm     = (FIELD_WIDTH_MM * HOLE_FRAC_X, FIELD_HEIGHT_MM * HOLE_FRAC_Y)
         self.hull_mm     = None   # list of (x_mm, y_mm) when hull is available
         self.init_heading = float(INITIAL_HEADING_DEG)
+        self.pivot_mm    = float(ROBOT_PIVOT_OFFSET_MM)  # turn pivot behind centre
 
         self.commands  = []
         self.positions = []   # (x_mm, y_mm, heading_deg, event_tag)
@@ -212,6 +213,11 @@ class Simulator:
         else:
             self.hull_mm = None
 
+        if 'SIM_PIVOT' in meta:
+            self.pivot_mm = meta['SIM_PIVOT'][0]
+        else:
+            self.pivot_mm = float(ROBOT_PIVOT_OFFSET_MM)
+
         self.reset()
 
     def reset(self):
@@ -220,9 +226,19 @@ class Simulator:
         self._simulate_all()
 
     def _simulate_all(self):
-        """Pre-run every command and record (x, y, heading, tag) per step."""
-        x, y    = self.start_mm
+        """Pre-run every command and record (x, y, heading, tag) per step.
+
+        x, y is the robot CENTRE.  The robot rotates about a pivot pivot_mm
+        behind the centre, so a TURN keeps the pivot fixed and swings the
+        centre, while a FORWARD translates both.  This mirrors the off-centre
+        pivot the planner compensated its commands for.
+        """
+        L       = self.pivot_mm
+        x, y    = self.start_mm           # centre
         heading = self.init_heading
+        rad     = math.radians(heading)
+        px      = x - L * math.cos(rad)   # pivot sits L behind the centre
+        py      = y - L * math.sin(rad)
         self.positions = [(x, y, heading, 'START')]
 
         for cmd, val in self.commands:
@@ -230,11 +246,16 @@ class Simulator:
                 tag = cmd
             elif cmd == 'TURN':
                 heading = (heading + val + 180.0) % 360.0 - 180.0
+                rad = math.radians(heading)
+                x = px + L * math.cos(rad)   # centre swings about fixed pivot
+                y = py + L * math.sin(rad)
                 tag = 'TURN'
             elif cmd == 'FORWARD':
                 rad = math.radians(heading)
-                x  += val * math.cos(rad)
-                y  += val * math.sin(rad)
+                px += val * math.cos(rad)
+                py += val * math.sin(rad)
+                x   = px + L * math.cos(rad)
+                y   = py + L * math.sin(rad)
                 tag = 'FORWARD'
             elif cmd == 'LIFT_DOWN':
                 tag = 'LIFT_DOWN'
@@ -352,6 +373,13 @@ class Simulator:
         cv2.drawContours(canvas, [corners], 0, C_ROBOT, 2)
         # Front face highlighted
         cv2.line(canvas, tuple(corners[0]), tuple(corners[1]), (100, 255, 100), 3)
+
+        # Turn pivot (pivot_mm behind centre) — the point the robot rotates about
+        pivx = rx - self.pivot_mm * fwd[0]
+        pivy = ry - self.pivot_mm * fwd[1]
+        ppx, ppy = self._mm_to_canvas(pivx, pivy)
+        cv2.circle(canvas, (ppx, ppy), 4, (0, 200, 255), -1)
+        cv2.circle(canvas, (ppx, ppy), 4, (0, 0, 0), 1)
 
     def _draw_panel(self, canvas):
         panel_x = self.canvas_w - SIDE_W

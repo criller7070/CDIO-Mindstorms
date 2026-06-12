@@ -41,7 +41,8 @@ class FieldPlanner:
                  field_height_mm=FIELD_HEIGHT_MM,
                  field_hull=None,
                  robot_width_mm=0,
-                 robot_length_mm=0):
+                 robot_length_mm=0,
+                 pivot_offset_mm=0.0):
         """
         field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
         center_pos:      (cx, cy) pixel coords of center crosshair
@@ -71,6 +72,11 @@ class FieldPlanner:
         # Robot body clearance (added to obstacle margins so the body stays clear)
         self.robot_half_width_px   = (robot_width_mm  / 2.0) * self.px_per_mm
         self.robot_half_length_mm  = robot_length_mm  / 2.0
+
+        # Turn pivot offset (mm behind centre → px).  The robot rotates about
+        # this point, not its centre, so command generation compensates for it.
+        self.pivot_offset_mm = pivot_offset_mm
+        self.pivot_offset_px = pivot_offset_mm * self.px_per_mm
 
         self.gw = field_px_w // self.GRID_SCALE + 1
         self.gh = field_px_h // self.GRID_SCALE + 1
@@ -412,6 +418,9 @@ class FieldPlanner:
             # Camera pixels-per-mm so the simulator can render at the exact
             # same scale as the debug overlay (same physical mm → same screen px).
             "# SIM_PXPERMM: {:.5f}".format(self.px_per_mm),
+            # Turn pivot offset (mm behind centre) so the simulator swings the
+            # robot about the same point the commands were compensated for.
+            "# SIM_PIVOT: {:.1f}".format(self.pivot_offset_mm),
         ]
         if self._field_hull is not None:
             pts = self._field_hull.reshape(-1, 2)
@@ -452,13 +461,23 @@ class FieldPlanner:
                 if dist_px < self.GRID_SCALE:
                     continue
 
-                target_heading = float(np.degrees(np.arctan2(dy, dx)))
+                # Off-centre pivot compensation.  The robot rotates about a point
+                # L px behind its centre, so a turn swings the centre.  To still
+                # land the centre on the next waypoint, aim along
+                #   V = (waypoint - centre) + L * heading_unit
+                # and drive |V| - L.  With L = 0 this reduces to the old maths.
+                L = self.pivot_offset_px
+                hr = np.radians(heading)
+                vx = dx + L * np.cos(hr)
+                vy = dy + L * np.sin(hr)
+                target_heading = float(np.degrees(np.arctan2(vy, vx)))
                 turn = (target_heading - heading + 180.0) % 360.0 - 180.0
                 if abs(turn) > 2:
                     leg_cmds.append("TURN:{}".format(int(round(turn))))
                     heading = target_heading
 
-                dist_mm = max(1, int(dist_px / self.px_per_mm))
+                dist_px_eff = (vx ** 2 + vy ** 2) ** 0.5 - L
+                dist_mm = max(1, int(dist_px_eff / self.px_per_mm))
                 leg_cmds.append("FORWARD:{}".format(dist_mm))
 
             # Split the last FORWARD so the robot pauses with its front face at

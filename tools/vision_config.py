@@ -24,6 +24,12 @@ HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
 ROBOT_WIDTH_MM  = 240   # side-to-side across tracks
 ROBOT_LENGTH_MM = 370   # front bumper to back
 
+# Turn pivot: the robot rotates about a point at 25% of its length from the BACK
+# and 50% of its width (centred between the tracks).  This value is how far that
+# pivot sits BEHIND the geometric centre (positive = toward the rear).  Command
+# generation compensates for it so the robot centre still follows the path.
+ROBOT_PIVOT_OFFSET_MM = ROBOT_LENGTH_MM * (0.5 - 0.25)   # 92.5 mm behind centre
+
 # ── HSV calibration ───────────────────────────────────────────────────────────
 COLOR_RANGES_FILE = os.path.join(os.path.dirname(__file__), "color_ranges.json")
 
