@@ -87,9 +87,12 @@ class EV3NavController:
         # Try to initialize gyro sensor for accurate turning (Port 1)
         try:
             self.gyro = GyroSensor(Port.S1)
+            # Read once to confirm it's really a responsive gyro, not just a port
+            start_angle = self.gyro.angle()
+            print("[OK] Gyro sensor on Port.S1 (angle={})".format(start_angle))
         except Exception as e:
             self.gyro = None
-            print("[DEBUG] Gyro sensor not found or failed; using default turning")
+            print("[DEBUG] Gyro sensor not found or failed ({}); using default turning".format(str(e)[:30]))
         
         self.forward_speed = 200
         self.turn_speed = 200
@@ -190,15 +193,22 @@ class EV3NavController:
                 if value != 0:
                     self._log("TURN {} deg".format(value))
                     if self.gyro and self.robot:
-                        # Closed-loop: turn until gyro reaches target angle
+                        # Closed-loop: turn in the commanded direction until the gyro
+                        # has TRAVELED abs(value) degrees. Compared on magnitude so it
+                        # works regardless of the gyro's sign convention.
+                        print("[TURN] gyro closed-loop, target={} deg".format(value))
                         self.gyro.reset_angle(0)
-                        if value > 0:
-                            while self.gyro.angle() < value:
-                                self.robot.drive(0, self.turn_speed)
-                        else:
-                            while self.gyro.angle() > value:
-                                self.robot.drive(0, -self.turn_speed)
+                        target = abs(value)
+                        rate = self.turn_speed if value > 0 else -self.turn_speed
+                        last_logged = 0
+                        while abs(self.gyro.angle()) < target:
+                            self.robot.drive(0, rate)
+                            traveled = abs(self.gyro.angle())
+                            if traveled - last_logged >= 30:
+                                print("[TURN] angle={}".format(self.gyro.angle()))
+                                last_logged = traveled
                         self.robot.stop()
+                        print("[TURN] done, final angle={}".format(self.gyro.angle()))
                     elif self.robot:
                         # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
                         scaled = int(round(value * 1.3198))
