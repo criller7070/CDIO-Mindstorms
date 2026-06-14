@@ -84,9 +84,9 @@ class EV3NavController:
             self.ev3.screen.clear()
             self.ev3.screen.print("Motor Mode")
         
-        # Try to initialize gyro sensor for accurate turning (Port 4)
+        # Try to initialize gyro sensor for accurate turning (Port 1)
         try:
-            self.gyro = GyroSensor(Port.S4)
+            self.gyro = GyroSensor(Port.S1)
         except Exception as e:
             self.gyro = None
             print("[DEBUG] Gyro sensor not found or failed; using default turning")
@@ -189,7 +189,17 @@ class EV3NavController:
             elif cmd == "TURN":
                 if value != 0:
                     self._log("TURN {} deg".format(value))
-                    if self.robot:
+                    if self.gyro and self.robot:
+                        # Closed-loop: turn until gyro reaches target angle
+                        self.gyro.reset_angle(0)
+                        if value > 0:
+                            while self.gyro.angle() < value:
+                                self.robot.drive(0, self.turn_speed)
+                        else:
+                            while self.gyro.angle() > value:
+                                self.robot.drive(0, -self.turn_speed)
+                        self.robot.stop()
+                    elif self.robot:
                         # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
                         scaled = int(round(value * 1.3198))
 			#scaled = int((round(value * 736.5 / 90.0))/4)
