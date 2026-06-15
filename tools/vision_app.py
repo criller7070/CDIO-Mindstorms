@@ -339,6 +339,7 @@ class VisionApp:
                             self._last_ball_positions,
                             self._last_dropoff,
                             self._last_ball_order,
+                            skipped=getattr(self, '_last_skipped', None),
                         )
                     print("Mission generated. Ready to run on EV3.")
 
@@ -418,10 +419,13 @@ class VisionApp:
         )
 
         self._last_planner        = planner
-        self._last_ball_positions = ball_positions
+        # Use the planner's REACHABLE list (what _debug_ball_order indexes into),
+        # not the full list — otherwise skipped balls shift the labels.
+        self._last_ball_positions = getattr(planner, '_debug_ball_positions', ball_positions)
         self._last_dropoff        = dropoff
         self._last_path_segs      = getattr(planner, '_debug_path_segs', [])
         self._last_ball_order     = getattr(planner, '_debug_ball_order', [])
+        self._last_skipped        = getattr(planner, '_debug_skipped_balls', [])
         return commands
 
     # ── Persistence ───────────────────────────────────────────────────────────
