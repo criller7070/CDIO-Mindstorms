@@ -156,12 +156,14 @@ class VisionApp:
 
                 # ── Centre position (from detector) ─────────────────────────
                 cx, cy = analysis['center_pos']
+                # Radius measured from the X marker; fall back to the constant.
+                center_radius = analysis.get('center_radius') or CENTER_RADIUS
 
                 # ── No-go zone (semi-transparent fill) ──────────────────────
                 _nogo = display.copy()
-                cv2.circle(_nogo, (cx, cy), CENTER_RADIUS, (15, 8, 40), -1)
+                cv2.circle(_nogo, (cx, cy), center_radius, (15, 8, 40), -1)
                 cv2.addWeighted(_nogo, 0.45, display, 0.55, 0, display)
-                cv2.circle(display, (cx, cy), CENTER_RADIUS, (90, 55, 160), 1)
+                cv2.circle(display, (cx, cy), center_radius, (90, 55, 160), 1)
 
                 # ── Hole ────────────────────────────────────────────────────
                 if hole_override:
@@ -369,6 +371,7 @@ class VisionApp:
             robot_pos = center_pos
 
         wall_margin = analysis['wall_margin'] or WALL_MARGIN
+        center_radius = analysis.get('center_radius') or CENTER_RADIUS
 
         # Compute intended hole position (may still be in obstacle zone)
         if hole_override is not None:
@@ -390,7 +393,7 @@ class VisionApp:
             field_bounds=analysis['field_bounds'],
             center_pos=center_pos,
             wall_margin=wall_margin,
-            center_radius=CENTER_RADIUS,
+            center_radius=center_radius,
             field_width_mm=FIELD_WIDTH_MM,
             field_height_mm=FIELD_HEIGHT_MM,
             field_hull=analysis['field_hull'],

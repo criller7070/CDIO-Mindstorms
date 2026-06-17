@@ -21,6 +21,7 @@ class BallDetector:
         self._ball_tracks       = {"WHITE": [], "ORANGE": []}
         self.min_red_line_length = 50
         self._center_ema        = None   # smoothed centre position (x, y)
+        self._center_r_ema      = None   # smoothed centre marker radius (px)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -50,7 +51,8 @@ class BallDetector:
             field_bounds = (20, 20, fw - 20, fh - 20)
             field_hull   = None
 
-        center_pos   = self._detect_center(red_cnts, field_bounds, field_detected)
+        center_pos, center_radius = self._detect_center(
+            red_cnts, field_bounds, field_detected)
         wall_margin  = (self._detect_wall_margin(red_walls['mask'], field_bounds)
                         if field_detected else None)
 
@@ -63,6 +65,7 @@ class BallDetector:
             'field_detected': field_detected,
             'field_hull':     field_hull,
             'center_pos':     center_pos,
+            'center_radius':  center_radius,
             'wall_margin':    wall_margin,
             'frame_h': fh,
             'frame_w': fw,
@@ -72,19 +75,22 @@ class BallDetector:
     CENTER_SMOOTHING = 0.3
 
     def _detect_center(self, red_cnts, field_bounds, field_detected):
-        """Return the pixel position of the centre obstacle (the red X marker).
+        """Return ((cx, cy), radius) of the centre obstacle (the red X marker).
 
         Among red contours whose centroid lies in the central 50 % of the
         field, pick the single contour closest to the field centre — skipping
         the field-boundary contour (too large) and noise specks (too small).
-        Its area-weighted centroid (cv2.moments) is the marker position, then
-        an EMA suppresses residual frame-to-frame jitter.  Falls back to the
-        geometric midpoint of the field bounds when no marker is found.
+        Its area-weighted centroid (cv2.moments) is the marker position and its
+        minimum enclosing circle gives the marker radius, so the no-go zone
+        matches the X's actual size.  Both are EMA-smoothed to suppress
+        frame-to-frame jitter.  Falls back to the geometric midpoint of the
+        field bounds (and radius=None) when no marker is found.
         """
         x0, y0, x1, y1 = field_bounds
         fcx, fcy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
         raw = None
+        raw_r = None
         if field_detected and red_cnts:
             bw, bh = x1 - x0, y1 - y0
             mfx, mfy = bw * 0.25, bh * 0.25
@@ -107,17 +113,28 @@ class BallDetector:
                 if best_d is None or d < best_d:
                     best_d = d
                     raw = (ccx, ccy)
+                    raw_r = cv2.minEnclosingCircle(cnt)[1]
 
         if raw is None:
             raw = (fcx, fcy)
 
+        a = self.CENTER_SMOOTHING
         if self._center_ema is None:
             self._center_ema = raw
         else:
-            a = self.CENTER_SMOOTHING
             self._center_ema = (self._center_ema[0] * (1 - a) + raw[0] * a,
                                 self._center_ema[1] * (1 - a) + raw[1] * a)
-        return (int(round(self._center_ema[0])), int(round(self._center_ema[1])))
+
+        radius = None
+        if raw_r is not None:
+            if self._center_r_ema is None:
+                self._center_r_ema = raw_r
+            else:
+                self._center_r_ema = self._center_r_ema * (1 - a) + raw_r * a
+            radius = int(round(self._center_r_ema))
+
+        return ((int(round(self._center_ema[0])),
+                 int(round(self._center_ema[1]))), radius)
 
     @staticmethod
     def _detect_wall_margin(red_mask, field_bounds):
