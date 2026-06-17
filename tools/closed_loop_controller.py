@@ -43,13 +43,20 @@ from vision_detector import BallDetector
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX      = 18.0   # waypoint counts as reached within this many pixels
+ARRIVE_PX      = 32.0   # waypoint counts as reached within this many pixels.
+                        # Must exceed one forward step, or the robot steps PAST a
+                        # waypoint without registering arrival and spins to go back.
 TURN_TOL_DEG   = 12.0   # rotate only for heading errors larger than this. Must
                         # exceed the EV3 gyro turn's coast/overshoot, or the loop
                         # limit-cycles (turn past target, correct back, repeat).
 TURN_COMMIT_DEG = 45.0  # after a turn, drive a forward step before turning again
                         # unless the heading error still exceeds this. Prevents
                         # turn-turn-turn oscillation from small overshoots.
+# Measured EV3 follow-mode turn response: actual = TURN_SLOPE*commanded + coast.
+# Compensate so a requested heading change actually lands on target:
+#   command = (desired - TURN_COAST_DEG) / TURN_SLOPE
+TURN_SLOPE     = 1.05
+TURN_COAST_DEG = 8.0
 MAX_STEP_MM    = 50     # never drive more than this (physical mm) between observations
 MIN_STEP_MM    = 10     # smallest forward nudge worth sending
 # robot/main.py executes FORWARD:v as straight(-v / 3.2288), i.e. the command
@@ -57,7 +64,9 @@ MIN_STEP_MM    = 10     # smallest forward nudge worth sending
 # physical step actually moves that far (otherwise the robot crawls ~1/3 speed).
 FORWARD_CMD_SCALE = 3.2288
 MAX_POSE_MISS  = 60     # give up after this many consecutive frames with no marker
-REPLAN_PX      = 90.0   # if the robot strays this far from the path, re-plan
+REPLAN_PX      = 400.0  # only re-plan on MAJOR drift. Per-step heading correction
+                        # already steers to the current waypoint, so a low value
+                        # just churns (re-plans whenever the next waypoint is far).
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -264,6 +273,16 @@ def _flatten_segs(segs, min_gap_px=6.0):
 # ──────────────────────────────────────────────────────────────────────────────
 # The control loop.
 # ──────────────────────────────────────────────────────────────────────────────
+def _turn_command(err_deg):
+    """Compensated TURN command so the robot actually rotates ~err_deg.
+
+    Inverts the measured response actual = TURN_SLOPE*cmd + TURN_COAST_DEG.
+    """
+    mag = (abs(err_deg) - TURN_COAST_DEG) / TURN_SLOPE
+    mag = max(2, int(round(mag)))
+    return "TURN:{}".format(int(math.copysign(mag, err_deg)))
+
+
 def follow_path(get_pose, link, waypoints, px_per_mm,
                 face_deg=None, on_step=None, replan=None):
     """Drive the robot through `waypoints` using live pose feedback.
@@ -325,7 +344,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         turn_now = (abs(err) > TURN_TOL_DEG
                     and not (just_turned and abs(err) <= TURN_COMMIT_DEG))
         if turn_now:
-            cmd = "TURN:{}".format(int(round(err)))
+            cmd = _turn_command(err)
             just_turned = True
         else:
             step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
@@ -344,7 +363,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         if pose is not None:
             err = (face_deg - pose[2] + 180.0) % 360.0 - 180.0
             if abs(err) > TURN_TOL_DEG:
-                link.send_and_wait("TURN:{}".format(int(round(err))))
+                link.send_and_wait(_turn_command(err))
     link.send_and_wait("STOP")
     return True
 
@@ -360,7 +379,7 @@ class CameraPoseSource:
     Optionally renders a debug window; press 'q' there to abort.
     """
 
-    def __init__(self, cap, detector, flip=True, show=True, flush=4):
+    def __init__(self, cap, detector, flip=True, show=True, flush=2):
         self.cap = cap
         self.detector = detector
         self.flip = flip
@@ -427,6 +446,12 @@ def _open_camera(index):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
+    # Keep only the newest frame so reads after a blocking move aren't stale
+    # (stale/lagging frames were causing intermittent "lost marker" aborts).
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
     return cap
 
 
@@ -591,11 +616,13 @@ def run_sim():
                  (520.0, 120.0), (300.0, 100.0)]
     start_pose = (100.0, 400.0, 0.0)   # facing +x (right), but first leg goes up-right
 
-    # turn_overshoot_deg models the EV3 gyro coast that caused the real-robot
-    # limit cycle; a healthy loop must still converge with few turns.
+    # Model the measured follow-mode turn response (actual = gain*cmd + coast),
+    # deliberately MISMATCHED vs the controller's compensation (1.05 / 8 deg) so
+    # the test proves convergence is robust to real-world scatter, not just exact
+    # cancellation.
     sim = SimLink(start_pose, px_per_mm,
-                  turn_gain=1.0, fwd_gain=0.95, lateral_noise_mm=4.0,
-                  turn_overshoot_deg=8.0, seed=1)
+                  turn_gain=1.12, fwd_gain=0.95, lateral_noise_mm=4.0,
+                  turn_overshoot_deg=10.0, seed=1)
 
     steps = {"n": 0, "turns": 0, "fwd": 0}
 

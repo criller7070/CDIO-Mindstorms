@@ -420,6 +420,13 @@ class EV3NavController:
         self.ev3.screen.print("Follow mode")
         self.ev3.speaker.say("Follow mode")
         self.ev3.light.on(Color.GREEN)
+
+        # Closed-loop turns are small and frequent, so accuracy matters more than
+        # speed. At the default 200 deg/s the gyro turn coasts ~18 deg past the
+        # target (momentum), which makes the host's fine heading corrections
+        # overshoot and oscillate. Turning slowly here nearly eliminates that
+        # coast. Only affects follow mode (a separate process from missions).
+        self.turn_speed = 45
         self._log("Follow loop ready")
 
         # Seed the ack file so a stale value can't be mistaken for a real one.
