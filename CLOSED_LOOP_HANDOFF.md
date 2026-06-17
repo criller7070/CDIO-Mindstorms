@@ -1,7 +1,26 @@
 # Closed-Loop Navigation — Handoff
 
-**Branch:** `closed-loop` (pushed to `origin/closed-loop`, latest commit `85cd451`).
+**Branch:** `closed-loop` (pushed to `origin/closed-loop`, latest commit `ac6c67e`).
 All changes below are committed and pushed.
+
+## Where to pick up next session
+
+1. **Verify gate timing** — the 4-waypoint look-ahead (≈90 mm pre-open) was committed
+   in `85cd451` but the battery died before it could be tested. This is the first thing
+   to verify: do balls get scooped cleanly, or does the gate still clip them?
+   If still clipping: increase `GATE_OPEN_DEG` or the look-ahead count in `on_arrive`.
+   If gate opens too early and catches transit objects: reduce look-ahead to 3 or 2.
+
+2. **Verify gate angle** — `GATE_OPEN_DEG = 90` and `GATE_CLOSE_DEG = 90` are untested
+   with a charged battery. Check that the gate fully opens to receive a ball and fully
+   closes to retain it. Adjust the degrees if the motion is too short or too long.
+
+3. **Tune speed** — currently `SPEED:300` mm/s. Once gate timing is solid, try
+   `SPEED:400` or `SPEED:500`. Faster steps → fewer TCP round trips → faster runs.
+
+4. **Color calibration** — `tools/color_ranges.json` was recalibrated for the current
+   lab lighting. If balls are not detected or wrong objects are detected, re-run
+   calibration (see section below).
 
 ---
 
@@ -128,13 +147,44 @@ ssh robot@10.56.138.36 "fuser -k 9999/tcp 2>/dev/null; pkill -f 'brickrun|pybric
 
 ## Connection details
 
-- **Robot IP**: `10.56.138.36` (DHCP — may change if robot reconnects to eduroam)
+- **Robot IP**: `10.56.138.36` (DHCP — may change if robot reconnects to eduroam).
+  If SSH fails: check the EV3's screen (it shows its IP on the WiFi status page), or
+  scan with `nmap -sn 10.56.138.0/24 | grep -A1 EV3` or `arp -a | grep -i lego`.
 - **SSH key**: `id_ed25519` from this PC is in the robot's `~/.ssh/authorized_keys`.
   A previous key labelled `claude-cdio` can be removed if present.
 - **Camera**: index `1` (`/dev/video1`). Opens with a V4L2 WARN but works via
   fallback. Set `QT_QPA_PLATFORM=xcb` or the cv2 window won't display.
+  If the camera window is grey/frozen: another process may be holding `/dev/video1`.
+  Check with `fuser /dev/video1` and kill the offending process.
 - **Robot git**: repo at `/home/robot/CDIO-Mindstorms`, branch `closed-loop`.
   Run `git pull` before each session to get latest code.
+
+## What you see in the camera window
+
+- **Purple circle** around the detected robot position (radius = `ARRIVE_PX`)
+- **Arrow** from robot center pointing in the current heading direction
+- **Cyan dots** on the planned waypoint path
+- **Coloured circles** on detected balls (green = will collect, red = skipped/obstacle)
+- **Yellow crosshair** on the current target waypoint
+- If the window is blank or shows no overlay: ArUco marker not detected — check
+  lighting, marker orientation (top edge = robot front), and that the marker sits flat.
+
+## Color calibration (if balls are missed or wrong things detected)
+
+Run the calibration UI from the `tools/` directory:
+```bash
+cd tools/
+QT_QPA_PLATFORM=xcb python3 vision_app.py --calibrate
+```
+- **TAB** — cycle between WHITE / ORANGE / RED
+- Drag the HSV trackbars until only the target ball color is highlighted in the mask
+- **S** — save to `color_ranges.json`
+- **Q** — quit
+
+`color_ranges.json` is committed, so commit any updated calibration:
+```bash
+git add tools/color_ranges.json && git commit -m "vision: recalibrate colors for current lighting"
+```
 
 ---
 
