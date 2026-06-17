@@ -69,7 +69,11 @@ class FieldPlanner:
         px_per_mm_y = field_px_h / field_height_mm
         self.px_per_mm = (px_per_mm_x + px_per_mm_y) / 2.0
 
-        # Robot body clearance (added to obstacle margins so the body stays clear)
+        # Robot body clearance (added to obstacle margins so the body stays clear).
+        # Near a wall the robot travels parallel to it, so its WIDTH faces the
+        # wall — half-width is the correct perpendicular clearance.  (The nose,
+        # half-LENGTH ahead, only points at an obstacle when approaching a ball,
+        # which is handled by the front-intake stop in command generation.)
         self.robot_half_width_px   = (robot_width_mm  / 2.0) * self.px_per_mm
         self.robot_half_length_mm  = robot_length_mm  / 2.0
 
@@ -97,11 +101,14 @@ class FieldPlanner:
         grid = [[False] * self.gh for _ in range(self.gw)]
         for gx in range(self.gw):
             for gy in range(self.gh):
-                # Outside actual field hull (non-rectangular walls)
+                # Outside actual field hull (non-rectangular walls).  Keep the
+                # robot centre at least half-width inside the wall so the body
+                # (travelling parallel to it) stays clear.
                 if self._field_hull is not None:
                     px, py = self._to_px(gx, gy)
                     if cv2.pointPolygonTest(
-                            self._field_hull, (float(px), float(py)), False) < 0:
+                            self._field_hull, (float(px), float(py)), True) \
+                            < self.robot_half_width_px:
                         grid[gx][gy] = True
                         continue
                 # Rectangular wall buffer (fallback or extra margin)
@@ -436,21 +443,71 @@ class FieldPlanner:
     # Multi-trip planning
     # ------------------------------------------------------------------
 
-    def _segs_to_commands(self, path_segs, is_last_trip, heading, face_deg=None):
+    def _segs_to_commands(self, path_segs, is_last_trip, heading, cur_pos,
+                          face_deg=None):
         """
         Convert one trip's path segments to EV3 commands.
-        Tracks and returns the robot's final heading so the next trip
-        can continue without a spurious TURN at the join.
+        Tracks and returns the robot's final heading AND its real (x, y) pixel
+        pose so the next leg/trip continues from where the robot actually
+        stopped (which, after a front-intake collect, is short of the ball
+        centre) instead of from the segment's nominal endpoint.
 
+        cur_pos:  the robot's actual pixel position at the start of these segs.
         face_deg: if set, a TURN to this heading is inserted before STOP on
                   the last trip so the robot faces the hole when it arrives.
+
+        Returns (commands, heading, cur_pos, driven_segs), where driven_segs is
+        the list of actual traversed polylines (one per leg, after the start
+        override and the collect trim) so the debug overlay can draw exactly
+        what the robot does.
         """
         commands = []
+        driven_segs = []
         n_collect = len(path_segs) - 1
+        half_len_px = self.robot_half_length_mm * self.px_per_mm
 
         for leg, seg in enumerate(path_segs):
             is_collect = leg < n_collect
             pts = self.simplify(seg, eps=8)
+            if not pts:
+                continue
+
+            # Start this leg from where the robot ACTUALLY is.  The segment's
+            # nominal start (pts[0]) is the previous waypoint (a ball centre),
+            # but after a front-intake collect the robot stopped half a body
+            # length short of it.  Overriding pts[0] with the real pose makes
+            # the first move re-join the planned path cleanly instead of
+            # translating the whole leg by the collect shortfall.
+            pts = [tuple(cur_pos)] + [tuple(p) for p in pts[1:]]
+
+            # Front-intake collection: the intake sits in the middle of the
+            # front face, so the ball must end up JUST in front of the robot.
+            # Trim the planned path by half a body length of ARC length from the
+            # end, so the robot's CENTRE stops there and its NOSE lands on the
+            # ball — driving the centre onto the ball would shove it away.
+            # Walking back along the polyline (not just the last segment) keeps
+            # the nose on the ball even when the final hop is shorter than the
+            # half-length.  Pivot compensation in the move loop then lands the
+            # centre on this trimmed endpoint automatically — no post-hoc command
+            # surgery needed.  (Wire a LIFT_DOWN / intake command in right after
+            # this leg once collection is implemented.)
+            if is_collect and half_len_px > 0:
+                remaining = half_len_px
+                while len(pts) >= 2:
+                    ax, ay = pts[-2]
+                    bx, by = pts[-1]
+                    seg_len = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+                    if seg_len <= 1e-6:
+                        pts.pop()
+                        continue
+                    if seg_len >= remaining:
+                        t = (seg_len - remaining) / seg_len
+                        pts[-1] = (ax + (bx - ax) * t, ay + (by - ay) * t)
+                        break
+                    remaining -= seg_len
+                    pts.pop()
+
+            driven_segs.append(list(pts))
 
             leg_cmds = []
             for i in range(1, len(pts)):
@@ -480,27 +537,11 @@ class FieldPlanner:
                 dist_mm = max(1, int(dist_px_eff / self.px_per_mm))
                 leg_cmds.append("FORWARD:{}".format(dist_mm))
 
-            # Split the last FORWARD so the robot pauses with its front face at
-            # the ball (collect point), then advances the remaining half-length
-            # to the ball centre.  Splitting keeps the net distance intact so
-            # the robot stays on the planned path and still reaches the hole —
-            # the old code subtracted the half-length outright, which made every
-            # collect leg fall short and accumulated into a large end-of-route
-            # drift.  (Drop a LIFT_DOWN/LIFT_UP between the two FORWARDs here
-            # once collection commands are wired in.)
-            half_len = int(round(self.robot_half_length_mm))
-            if is_collect and half_len > 0:
-                for j in range(len(leg_cmds) - 1, -1, -1):
-                    if leg_cmds[j].startswith("FORWARD:"):
-                        old_val = int(leg_cmds[j].split(":")[1])
-                        if old_val > half_len:
-                            leg_cmds[j:j + 1] = [
-                                "FORWARD:{}".format(old_val - half_len),
-                                "FORWARD:{}".format(half_len),
-                            ]
-                        break
-
             commands.extend(leg_cmds)
+            # The move loop lands the centre on pts[-1]; for a collect leg that
+            # is already the pulled-back nose-stop, so this is the real pose.
+            cur_pos = pts[-1]
+
             if not is_collect and is_last_trip:
                 if face_deg is not None:
                     turn = (face_deg - heading + 180.0) % 360.0 - 180.0
@@ -509,7 +550,7 @@ class FieldPlanner:
                         heading = face_deg
                 commands.append("STOP")
 
-        return commands, heading
+        return commands, heading, cur_pos, driven_segs
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
                    capacity=6, initial_heading_deg=0, face_deg=None):
@@ -528,10 +569,15 @@ class FieldPlanner:
         meta = self._sim_metadata(robot_pos, dropoff_pos)
 
         reachable = [bp for bp in ball_positions if not self._is_in_obstacle(*bp)]
-        skipped = len(ball_positions) - len(reachable)
-        if skipped:
-            print("Skipping {} ball(s) inside obstacles/walls.".format(skipped))
+        skipped_balls = [bp for bp in ball_positions if self._is_in_obstacle(*bp)]
+        if skipped_balls:
+            print("Skipping {} ball(s) inside obstacles/walls.".format(len(skipped_balls)))
         ball_positions = reachable
+        # Expose the ACTUAL routed list + skipped balls so the overlay can label
+        # them correctly.  _debug_ball_order indexes into this reachable list,
+        # not the caller's original (which still includes the skipped balls).
+        self._debug_ball_positions = ball_positions
+        self._debug_skipped_balls = skipped_balls
 
         n = len(ball_positions)
         if n == 0:
@@ -541,9 +587,12 @@ class FieldPlanner:
             )
             cmds = ["SPEED:300"] + meta
             if path:
-                trip_cmds, _ = self._segs_to_commands(
-                    [path], True, initial_heading_deg)
+                trip_cmds, _, _, driven = self._segs_to_commands(
+                    [path], True, initial_heading_deg,
+                    (float(robot_pos[0]), float(robot_pos[1])), face_deg=face_deg)
                 cmds += trip_cmds
+                self._debug_path_segs = driven
+                self._debug_ball_order = []
             return cmds
 
         clusters = self.cluster_balls(ball_positions, capacity)
@@ -584,18 +633,22 @@ class FieldPlanner:
             print("WARNING: could not plan any trip – check field bounds / obstacles.")
             return ["STOP"]
 
-        # Build commands, threading heading across all trips
+        # Build commands, threading heading AND real pose across all trips
         commands = ["SPEED:300"] + meta
         heading = float(initial_heading_deg)
+        cur_pos = (float(robot_pos[0]), float(robot_pos[1]))
 
         # Trip 1 starts from robot_pos
-        trip_cmds, heading = self._segs_to_commands(
-            best_first_segs, k == 1, heading, face_deg=face_deg if k == 1 else None)
+        trip_cmds, heading, cur_pos, driven = self._segs_to_commands(
+            best_first_segs, k == 1, heading, cur_pos,
+            face_deg=face_deg if k == 1 else None)
         commands += ["# Trip 1/{} – cluster {}".format(k, best_first)] + trip_cmds
 
-        # Remaining trips start from the hole
+        # Remaining trips start from the hole.  debug_segs collects the ACTUAL
+        # driven polylines (trimmed to the nose-stops) so the overlay matches
+        # the commands, not the raw A* paths to the ball centres.
         trip_num = 2
-        debug_segs = list(best_first_segs)
+        debug_segs = list(driven)
         debug_order = list(best_first_order or [])
         for i in range(k):
             if i == best_first:
@@ -603,10 +656,11 @@ class FieldPlanner:
             segs = hole_segs[i]
             if segs:
                 is_last = (trip_num == k)
-                trip_cmds, heading = self._segs_to_commands(
-                    segs, is_last, heading, face_deg=face_deg if is_last else None)
+                trip_cmds, heading, cur_pos, driven = self._segs_to_commands(
+                    segs, is_last, heading, cur_pos,
+                    face_deg=face_deg if is_last else None)
                 commands += ["# Trip {}/{} – cluster {}".format(trip_num, k, i)] + trip_cmds
-                debug_segs.extend(segs)
+                debug_segs.extend(driven)
                 debug_order.extend(hole_ball_orders[i])
             trip_num += 1
 
@@ -619,16 +673,39 @@ class FieldPlanner:
     # ------------------------------------------------------------------
 
     def debug_overlay(self, frame, path_segs, robot_pos, ball_positions,
-                      dropoff_pos, ball_order):
-        """Draw the planned route on a copy of frame for visual inspection."""
+                      dropoff_pos, ball_order, skipped=None):
+        """Draw the planned route on a copy of frame for visual inspection.
+
+        path_segs are the ACTUAL driven polylines (trimmed to the nose-stops),
+        so collect legs end half a body length short of the ball centre — the
+        visible gap is exactly the front-intake reach.
+
+        ball_positions must be the REACHABLE list that ball_order indexes into.
+        skipped (optional) is the list of balls dropped as unreachable (inside
+        the wall/centre keep-out); they are drawn greyed-out so it's obvious the
+        route ignores them.
+        """
         import cv2
         vis = frame.copy()
         colors = [(0, 255, 255), (255, 128, 0), (128, 0, 255)]
 
+        def _ipt(p):
+            return (int(round(p[0])), int(round(p[1])))
+
+        dropoff_i = _ipt(dropoff_pos)
         for i, seg in enumerate(path_segs):
             color = colors[i % len(colors)]
             for j in range(1, len(seg)):
-                cv2.line(vis, seg[j - 1], seg[j], color, 2)
+                cv2.line(vis, _ipt(seg[j - 1]), _ipt(seg[j]), color, 2)
+            # Mark where the robot actually stops at the end of each leg.  Legs
+            # that end at the hole are the delivery legs; everything else is a
+            # collect leg whose endpoint is the nose-stop in front of a ball.
+            if seg:
+                end = _ipt(seg[-1])
+                if abs(end[0] - dropoff_i[0]) > 12 or abs(end[1] - dropoff_i[1]) > 12:
+                    cv2.circle(vis, end, 5, (0, 255, 0), 2)
+                    cv2.putText(vis, "stop", (end[0] + 6, end[1] - 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
 
         # Obstacle grid overlay (thin)
         for gx in range(self.gw):
@@ -641,6 +718,16 @@ class FieldPlanner:
         cv2.circle(vis, (int(robot_pos[0]), int(robot_pos[1])), 8, (0, 255, 0), -1)
         cv2.putText(vis, "START", (int(robot_pos[0]) + 10, int(robot_pos[1])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # Skipped balls (unreachable) — greyed out so it's clear the route
+        # ignores them.  Drawn first so routed balls sit on top.
+        for sx, sy in (skipped or []):
+            sx, sy = int(sx), int(sy)
+            cv2.circle(vis, (sx, sy), 6, (120, 120, 120), 1)
+            cv2.line(vis, (sx - 5, sy - 5), (sx + 5, sy + 5), (120, 120, 120), 1)
+            cv2.line(vis, (sx - 5, sy + 5), (sx + 5, sy - 5), (120, 120, 120), 1)
+            cv2.putText(vis, "skip", (sx + 8, sy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1)
 
         for rank, idx in enumerate(ball_order):
             bx, by = int(ball_positions[idx][0]), int(ball_positions[idx][1])
