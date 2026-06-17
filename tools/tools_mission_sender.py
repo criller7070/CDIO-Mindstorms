@@ -147,6 +147,62 @@ class HostMissionSender:
             self.commands_failed += 1
             return False
     
+    def send_and_wait(self, command, timeout=20.0, ack_token="DONE"):
+        """Send one command and BLOCK until the robot acknowledges it.
+
+        This is the core of closed-loop control: the host must not observe the
+        robot or issue the next correction until the current move has finished.
+        The EV3 bridge replies with a line containing ``DONE`` (or ``TIMEOUT``)
+        once the executor has run the command.
+
+        Returns True on a DONE ack, False on timeout / lost connection / a
+        non-DONE reply.
+        """
+        if not self.connection_active or not self.sock:
+            self._log("ERROR: No connection to EV3")
+            return False
+
+        if not command.endswith('\n'):
+            command = command + '\n'
+
+        try:
+            self.sock.send(command.encode('utf-8'))
+        except Exception as e:
+            self._log("ERROR: send failed: {}".format(e))
+            self.connection_active = False
+            return False
+
+        self._log("Sent: {} (awaiting {})".format(command.strip(), ack_token))
+
+        buf = ""
+        deadline = time.time() + timeout
+        self.sock.settimeout(timeout)
+        try:
+            while time.time() < deadline:
+                try:
+                    data = self.sock.recv(1024)
+                except socket.timeout:
+                    break
+                if not data:
+                    self._log("ERROR: connection closed by EV3")
+                    self.connection_active = False
+                    return False
+                buf += data.decode('utf-8', errors='ignore')
+                if ack_token in buf:
+                    self.commands_sent += 1
+                    return True
+                if "TIMEOUT" in buf:
+                    self._log("EV3 reported TIMEOUT on: {}".format(command.strip()))
+                    return False
+        finally:
+            try:
+                self.sock.settimeout(None)
+            except Exception:
+                pass
+
+        self._log("TIMEOUT waiting for ack to: {}".format(command.strip()))
+        return False
+
     def load_mission_file(self, filename="commands.txt"):
         """Load mission commands from file"""
         commands = []

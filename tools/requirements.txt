@@ -1,2 +1,4 @@
-opencv-python
+# opencv-contrib-python (not plain opencv-python): the closed-loop controller's
+# robot tracking uses cv2.aruco, which ships only in the contrib build.
+opencv-contrib-python
 numpy

@@ -23,6 +23,24 @@ class BallDetector:
         self._center_ema        = None   # smoothed centre position (x, y)
         self._center_r_ema      = None   # smoothed centre marker radius (px)
 
+        # ── Robot pose (ArUco marker) ──────────────────────────────────────────
+        # The closed-loop controller reads the robot's live pose from a single
+        # ArUco marker mounted flat on top of the robot.  Mount it so the
+        # marker's TOP edge points toward the robot's FRONT; set
+        # robot_heading_offset_deg for any other mounting rotation.
+        self.robot_marker_id          = None   # None = use first marker found
+        self.robot_heading_offset_deg = 0.0
+        try:
+            # DICT_4X4_1000 matches the marker generator and chev.me "4x4 (1000)".
+            # (Low ids like 0 are identical across all 4X4 dicts, so older 4x4_50
+            #  markers still work too.)
+            _adict  = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)
+            _aparams = cv2.aruco.DetectorParameters()
+            self._aruco_detector = cv2.aruco.ArucoDetector(_adict, _aparams)
+        except Exception:
+            # opencv-python (non-contrib) or an old API: robot detection disabled.
+            self._aruco_detector = None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     # pixels a ball centre must be inside the red-wall bounding box.
@@ -70,6 +88,45 @@ class BallDetector:
             'frame_h': fh,
             'frame_w': fw,
         }
+
+    def detect_robot(self, frame):
+        """Detect the robot's pose from its ArUco marker.
+
+        Returns (x, y, heading_deg) in image space, or None if no marker is
+        visible.  The heading convention matches the path planner:
+            0 deg  = facing right (+x),  90 deg = facing down (+y),
+          -90 deg  = facing up (-y),    180 deg = facing left.
+        Heading is taken from the marker centre toward the midpoint of its top
+        edge, plus robot_heading_offset_deg.
+        """
+        if self._aruco_detector is None:
+            return None
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = self._aruco_detector.detectMarkers(gray)
+        if ids is None or len(ids) == 0:
+            return None
+
+        ids = ids.flatten()
+        idx = 0
+        if self.robot_marker_id is not None:
+            matches = [i for i, mid in enumerate(ids)
+                       if int(mid) == self.robot_marker_id]
+            if not matches:
+                return None
+            idx = matches[0]
+
+        # corners are ordered TL, TR, BR, BL (clockwise) per OpenCV.
+        quad = corners[idx].reshape(4, 2)
+        cx = float(quad[:, 0].mean())
+        cy = float(quad[:, 1].mean())
+
+        top_mid = (quad[0] + quad[1]) / 2.0      # midpoint of the TL–TR edge
+        fx, fy  = top_mid[0] - cx, top_mid[1] - cy
+        heading = float(np.degrees(np.arctan2(fy, fx))) + self.robot_heading_offset_deg
+        heading = (heading + 180.0) % 360.0 - 180.0
+
+        return (int(round(cx)), int(round(cy)), heading)
 
     # EMA weight for centre smoothing (0 = frozen, 1 = no smoothing).
     CENTER_SMOOTHING = 0.3

@@ -1,0 +1,615 @@
+#!/usr/bin/env python3
+"""
+Closed-loop navigation controller (HOST PC).
+
+Instead of computing a whole mission and dead-reckoning it (open-loop, which
+drifts as small per-command errors accumulate), this drives the robot ONE small
+move at a time while continuously watching it through the camera:
+
+    observe robot pose (ArUco)  ->  compare to next waypoint  ->  send ONE move
+            ^                                                          |
+            +----------------  wait for the robot's DONE  <-----------+
+
+Because the host re-measures the robot's real position and heading after every
+single move, translation/heading errors are corrected before they grow, so the
+robot stays on the planned path.
+
+Modes:
+    python closed_loop_controller.py                 # live: camera + Bluetooth
+    python closed_loop_controller.py --probe         # just print live ArUco pose
+    python closed_loop_controller.py --plan-only     # plan from one frame, show path
+    python closed_loop_controller.py --sim           # validate the loop, no hardware
+    python closed_loop_controller.py --camera 0      # override camera index
+
+Requires an ArUco marker on the robot — see generate_aruco_marker.py.
+"""
+import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+import sys
+import math
+import time
+
+import cv2
+import numpy as np
+
+from tools_path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+from vision_config import (
+    CAMERA_INDEX, WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
+    HOLE_FRAC_X, HOLE_FRAC_Y,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
+    load_color_ranges,
+)
+from vision_detector import BallDetector
+
+
+# ── Control-loop tunables ─────────────────────────────────────────────────────
+ARRIVE_PX     = 18.0   # waypoint counts as reached within this many pixels
+TURN_TOL_DEG  = 6.0    # rotate to correct heading errors larger than this
+MAX_STEP_MM   = 50     # never drive more than this between observations
+MIN_STEP_MM   = 8      # smallest forward nudge worth sending
+MAX_POSE_MISS = 60     # give up after this many consecutive frames with no marker
+REPLAN_PX     = 90.0   # if the robot strays this far from the path, re-plan
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Robot links: where commands actually go.  Both expose send_and_wait(cmd)->bool.
+# ──────────────────────────────────────────────────────────────────────────────
+class BluetoothLink:
+    """Sends single commands to the EV3 bridge and blocks for its DONE ack."""
+
+    def __init__(self, ev3_address=None):
+        from tools_mission_sender import HostMissionSender
+        self.sender = HostMissionSender(ev3_address)
+
+    def connect(self):
+        if not self.sender.connect_to_ev3(self.sender.ev3_address):
+            return False
+        # Confirm the bridge is alive before we start driving.
+        return self.sender.send_and_wait("PING", timeout=5.0, ack_token="PONG")
+
+    def send_and_wait(self, command):
+        return self.sender.send_and_wait(command)
+
+    def close(self):
+        self.sender.disconnect()
+
+
+class TCPLink:
+    """Sends single commands to the EV3 bridge over TCP/WiFi and blocks for DONE.
+
+    Lower latency and simpler than Bluetooth, and the robot is already on WiFi.
+    Matches robot/ev3_server.py --tcp.
+    """
+
+    def __init__(self, host, port=9999, timeout=20.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+
+    def connect(self):
+        import socket
+        try:
+            self.sock = socket.create_connection((self.host, self.port), timeout=10.0)
+        except OSError as e:
+            print("TCP connect to {}:{} failed: {}".format(self.host, self.port, e))
+            return False
+        # Confirm the bridge is alive before we start driving.
+        return self._send_wait("PING\n", "PONG")
+
+    def send_and_wait(self, command):
+        if not command.endswith("\n"):
+            command += "\n"
+        return self._send_wait(command, "DONE")
+
+    def _send_wait(self, payload, token):
+        import socket
+        try:
+            self.sock.sendall(payload.encode("utf-8"))
+        except OSError as e:
+            print("TCP send failed: {}".format(e))
+            return False
+        self.sock.settimeout(self.timeout)
+        buf = ""
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            try:
+                data = self.sock.recv(1024)
+            except socket.timeout:
+                break
+            if not data:
+                print("TCP connection closed by robot.")
+                return False
+            buf += data.decode("utf-8", errors="ignore")
+            if token in buf:
+                return True
+            if "TIMEOUT" in buf:
+                print("Robot reported TIMEOUT on: {}".format(payload.strip()))
+                return False
+        print("TCP timeout waiting for {} (cmd: {})".format(token, payload.strip()))
+        return False
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+
+class SimLink:
+    """A virtual robot for testing the loop with no hardware.
+
+    Applies the SAME command semantics as robot/main.py (TURN degrees, FORWARD
+    mm, both already calibrated on the EV3 so commanded == physical) to an
+    internal pose.  Optional gains/noise simulate real-world error so we can
+    confirm the closed loop actually corrects drift.
+    """
+
+    def __init__(self, pose, px_per_mm, turn_gain=1.0, fwd_gain=1.0,
+                 lateral_noise_mm=0.0, seed=0):
+        self.x, self.y, self.heading = pose
+        self.px_per_mm = px_per_mm
+        self.turn_gain = turn_gain
+        self.fwd_gain = fwd_gain
+        self.lateral_noise_mm = lateral_noise_mm
+        self.rng = np.random.default_rng(seed)
+        self.trail = [(self.x, self.y)]
+
+    def send_and_wait(self, command):
+        cmd, _, val = command.partition(":")
+        cmd = cmd.strip().upper()
+        if cmd == "TURN":
+            self.heading += float(val) * self.turn_gain
+            self.heading = (self.heading + 180.0) % 360.0 - 180.0
+        elif cmd == "FORWARD":
+            d_mm = float(val) * self.fwd_gain
+            d_px = d_mm * self.px_per_mm
+            hr = math.radians(self.heading)
+            self.x += d_px * math.cos(hr)
+            self.y += d_px * math.sin(hr)
+            if self.lateral_noise_mm:
+                lat = self.rng.normal(0.0, self.lateral_noise_mm) * self.px_per_mm
+                self.x += lat * math.cos(hr + math.pi / 2)
+                self.y += lat * math.sin(hr + math.pi / 2)
+            self.trail.append((self.x, self.y))
+        # STOP / SPEED / PING: no pose change.
+        return True
+
+    def pose(self):
+        return (self.x, self.y, self.heading)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Planning: turn a frame into a list of pixel waypoints to track.
+# ──────────────────────────────────────────────────────────────────────────────
+def plan_waypoints(detector, frame, robot_pos):
+    """Plan the full route from robot_pos and return it as pixel waypoints.
+
+    Reuses FieldPlanner exactly as the open-loop planner does, then flattens the
+    planner's driven polylines into an ordered waypoint list that the control
+    loop tracks with live pose feedback.
+
+    Returns (waypoints, planner, analysis, dropoff, face_deg).
+    """
+    analysis = detector.analyze_course(frame)
+    x_min, y_min, x_max, y_max = analysis['field_bounds']
+    center_pos    = analysis['center_pos']
+    wall_margin   = analysis['wall_margin'] or WALL_MARGIN
+    center_radius = analysis.get('center_radius') or CENTER_RADIUS
+
+    if analysis['field_detected']:
+        raw_dropoff = (x_min, (y_min + y_max) // 2)
+        face_deg = 180.0
+    else:
+        raw_dropoff = (int(x_min + (x_max - x_min) * HOLE_FRAC_X),
+                       int(y_min + (y_max - y_min) * HOLE_FRAC_Y))
+        face_deg = 180.0
+
+    planner = FieldPlanner(
+        field_bounds=analysis['field_bounds'],
+        center_pos=center_pos,
+        wall_margin=wall_margin,
+        center_radius=center_radius,
+        field_width_mm=FIELD_WIDTH_MM,
+        field_height_mm=FIELD_HEIGHT_MM,
+        field_hull=analysis['field_hull'],
+        robot_width_mm=ROBOT_WIDTH_MM,
+        robot_length_mm=ROBOT_LENGTH_MM,
+        pivot_offset_mm=ROBOT_PIVOT_OFFSET_MM,
+    )
+    dropoff = planner.snap_to_navigable(*raw_dropoff)
+    ball_positions = [(b['x'], b['y']) for b in analysis['balls']]
+
+    planner.plan_trips(
+        robot_pos=robot_pos,
+        ball_positions=ball_positions,
+        dropoff_pos=dropoff,
+        capacity=6,
+        initial_heading_deg=INITIAL_HEADING_DEG,
+        face_deg=face_deg,
+    )
+
+    segs = getattr(planner, '_debug_path_segs', [])
+    waypoints = _flatten_segs(segs)
+    return waypoints, planner, analysis, dropoff, face_deg
+
+
+def _flatten_segs(segs, min_gap_px=6.0):
+    """Concatenate planner polylines into one ordered, de-duplicated waypoint list."""
+    pts = []
+    for seg in segs:
+        for p in seg:
+            fp = (float(p[0]), float(p[1]))
+            if not pts or math.hypot(fp[0] - pts[-1][0], fp[1] - pts[-1][1]) >= min_gap_px:
+                pts.append(fp)
+    return pts
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The control loop.
+# ──────────────────────────────────────────────────────────────────────────────
+def follow_path(get_pose, link, waypoints, px_per_mm,
+                face_deg=None, on_step=None, replan=None):
+    """Drive the robot through `waypoints` using live pose feedback.
+
+    get_pose(): -> (x, y, heading_deg) in image space, or None when the robot
+                is not currently visible.
+    link:       object with send_and_wait(command)->bool.
+    replan():   optional callback -> new waypoint list, called when the robot
+                drifts more than REPLAN_PX from its target.
+
+    Returns True if the path was completed, False if aborted (pose lost / abort).
+    """
+    idx = 0
+    misses = 0
+
+    while idx < len(waypoints):
+        pose = get_pose()
+        if pose is None:
+            misses += 1
+            if misses == 1:
+                link.send_and_wait("STOP")   # freeze while we can't see it
+            if misses >= MAX_POSE_MISS:
+                print("Lost the robot marker for too long — aborting.")
+                return False
+            continue
+        misses = 0
+
+        x, y, heading = pose
+        tx, ty = waypoints[idx]
+        dx, dy = tx - x, ty - y
+        dist = math.hypot(dx, dy)
+
+        if dist < ARRIVE_PX:
+            idx += 1
+            continue
+
+        # Strayed far from the path? Re-plan from where we actually are.
+        if replan is not None and dist > REPLAN_PX:
+            new_wp = replan()
+            if new_wp:
+                waypoints = new_wp
+                idx = 0
+                continue
+
+        bearing = math.degrees(math.atan2(dy, dx))
+        err = (bearing - heading + 180.0) % 360.0 - 180.0
+
+        if abs(err) > TURN_TOL_DEG:
+            cmd = "TURN:{}".format(int(round(err)))
+        else:
+            step_mm = min(MAX_STEP_MM, dist / px_per_mm)
+            step_mm = max(MIN_STEP_MM, int(round(step_mm)))
+            cmd = "FORWARD:{}".format(step_mm)
+
+        if on_step:
+            on_step(pose, waypoints[idx], idx, cmd)
+        if not link.send_and_wait(cmd):
+            print("No ack for {} — aborting.".format(cmd))
+            return False
+
+    # Arrived: optionally face the hole, then stop.
+    if face_deg is not None:
+        pose = get_pose()
+        if pose is not None:
+            err = (face_deg - pose[2] + 180.0) % 360.0 - 180.0
+            if abs(err) > TURN_TOL_DEG:
+                link.send_and_wait("TURN:{}".format(int(round(err))))
+    link.send_and_wait("STOP")
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live camera pose source.
+# ──────────────────────────────────────────────────────────────────────────────
+class CameraPoseSource:
+    """Grabs a fresh frame and returns the robot's ArUco pose.
+
+    Flushes a few buffered frames first so that, right after a blocking move,
+    we read where the robot ACTUALLY is now — not a stale frame from mid-move.
+    Optionally renders a debug window; press 'q' there to abort.
+    """
+
+    def __init__(self, cap, detector, flip=True, show=True, flush=4):
+        self.cap = cap
+        self.detector = detector
+        self.flip = flip
+        self.show = show
+        self.flush = flush
+        self.aborted = False
+        self.target = None
+        self.waypoints = None
+
+    def grab(self):
+        frame = None
+        for _ in range(self.flush):
+            ret, f = self.cap.read()
+            if ret:
+                frame = f
+        if frame is None:
+            return None
+        if self.flip:
+            frame = cv2.flip(frame, 1)
+        return frame
+
+    def __call__(self):
+        frame = self.grab()
+        if frame is None:
+            return None
+        pose = self.detector.detect_robot(frame)
+        if self.show:
+            self._render(frame, pose)
+        return pose
+
+    def _render(self, frame, pose):
+        vis = frame.copy()
+        if self.waypoints:
+            for i in range(1, len(self.waypoints)):
+                p0 = tuple(map(int, self.waypoints[i - 1]))
+                p1 = tuple(map(int, self.waypoints[i]))
+                cv2.line(vis, p0, p1, (80, 80, 80), 1)
+        if self.target is not None:
+            t = tuple(map(int, self.target))
+            cv2.circle(vis, t, int(ARRIVE_PX), (255, 0, 255), 1)
+            cv2.drawMarker(vis, t, (255, 0, 255), cv2.MARKER_TILTED_CROSS, 12, 2)
+        if pose is not None:
+            x, y, h = pose
+            cv2.circle(vis, (x, y), 7, (0, 255, 0), -1)
+            hr = math.radians(h)
+            cv2.line(vis, (x, y),
+                     (int(x + 35 * math.cos(hr)), int(y + 35 * math.sin(hr))),
+                     (0, 255, 0), 2)
+            cv2.putText(vis, "pose {} {} {:.0f}deg".format(x, y, h),
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        else:
+            cv2.putText(vis, "NO ROBOT MARKER", (8, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.imshow("Closed-loop control", vis)
+        if (cv2.waitKey(1) & 0xFF) == ord('q'):
+            self.aborted = True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entry points / modes.
+# ──────────────────────────────────────────────────────────────────────────────
+def _open_camera(index):
+    cap = cv2.VideoCapture(index)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    return cap
+
+
+def run_probe(camera_index):
+    """Print (and show) the live ArUco pose. No Bluetooth — just verify tracking."""
+    detector = BallDetector(load_color_ranges())
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        print("ERROR: camera index {} did not open.".format(camera_index))
+        return
+    print("Probing robot pose. Press 'q' to quit.")
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            frame = cv2.flip(frame, 1)
+            pose = detector.detect_robot(frame)
+            vis = frame.copy()
+            if pose is not None:
+                x, y, h = pose
+                cv2.circle(vis, (x, y), 7, (0, 255, 0), -1)
+                hr = math.radians(h)
+                cv2.line(vis, (x, y),
+                         (int(x + 40 * math.cos(hr)), int(y + 40 * math.sin(hr))),
+                         (0, 255, 0), 2)
+                cv2.putText(vis, "x={} y={} heading={:.1f}".format(x, y, h),
+                            (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            else:
+                cv2.putText(vis, "no marker", (8, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.imshow("ArUco pose probe", vis)
+            if (cv2.waitKey(1) & 0xFF) == ord('q'):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+def run_plan_only(camera_index):
+    """Grab one frame, plan from the detected robot pose, and show the path."""
+    detector = BallDetector(load_color_ranges())
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        print("ERROR: camera index {} did not open.".format(camera_index))
+        return
+    frame = None
+    for _ in range(10):
+        ret, f = cap.read()
+        if ret:
+            frame = cv2.flip(f, 1)
+    cap.release()
+    if frame is None:
+        print("ERROR: no frame captured.")
+        return
+
+    pose = detector.detect_robot(frame)
+    if pose is None:
+        print("No robot marker found — cannot plan. Is the marker visible?")
+        return
+    robot_pos = (pose[0], pose[1])
+    waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
+        detector, frame, robot_pos)
+    print("Robot at {}, heading {:.1f} deg".format(robot_pos, pose[2]))
+    print("Planned {} waypoints, dropoff {}, face {} deg".format(
+        len(waypoints), dropoff, face_deg))
+
+    vis = frame.copy()
+    for i in range(1, len(waypoints)):
+        cv2.line(vis, tuple(map(int, waypoints[i - 1])),
+                 tuple(map(int, waypoints[i])), (0, 200, 255), 2)
+    cv2.circle(vis, robot_pos, 7, (0, 255, 0), -1)
+    cv2.circle(vis, (int(dropoff[0]), int(dropoff[1])), 9, (255, 0, 0), 2)
+    cv2.imshow("Planned path (close to exit)", vis)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+def run_live(camera_index, link):
+    """The real thing: camera + (Bluetooth or TCP) closed-loop run.
+
+    `link` is a connected-capable link object (BluetoothLink or TCPLink) whose
+    .connect()/.send_and_wait()/.close() drive the robot.
+    """
+    detector = BallDetector(load_color_ranges())
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        print("ERROR: camera index {} did not open.".format(camera_index))
+        return
+
+    source = CameraPoseSource(cap, detector, flip=True, show=True)
+
+    # Wait for the robot to be visible, then plan from its real pose.
+    print("Waiting for the robot marker to plan the route...")
+    robot_pose = None
+    for _ in range(200):
+        robot_pose = source()
+        if source.aborted:
+            cap.release(); cv2.destroyAllWindows(); return
+        if robot_pose is not None:
+            break
+    if robot_pose is None:
+        print("Never saw the robot marker — aborting.")
+        cap.release(); cv2.destroyAllWindows(); return
+
+    frame = source.grab()
+    robot_pos = (robot_pose[0], robot_pose[1])
+    waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
+        detector, frame, robot_pos)
+    source.waypoints = waypoints
+    if not waypoints:
+        print("Planner produced no path — nothing to do.")
+        cap.release(); cv2.destroyAllWindows(); return
+    print("Planned {} waypoints.".format(len(waypoints)))
+
+    if not link.connect():
+        print("ERROR: could not connect/handshake with the EV3 bridge.")
+        cap.release(); cv2.destroyAllWindows(); return
+
+    link.send_and_wait("SPEED:300")
+
+    def get_pose():
+        if source.aborted:
+            return None
+        return source()
+
+    def on_step(pose, target, idx, cmd):
+        source.target = target
+        print("wp {}/{} pose=({},{},{:.0f}) -> {}".format(
+            idx + 1, len(waypoints), pose[0], pose[1], pose[2], cmd))
+
+    def replan():
+        f = source.grab()
+        p = detector.detect_robot(f)
+        if p is None:
+            return None
+        wp, *_ = plan_waypoints(detector, f, (p[0], p[1]))
+        source.waypoints = wp
+        print("Re-planned: {} waypoints.".format(len(wp)))
+        return wp
+
+    try:
+        ok = follow_path(get_pose, link, waypoints, planner.px_per_mm,
+                         face_deg=face_deg, on_step=on_step, replan=replan)
+        print("Run complete." if ok else "Run aborted.")
+    finally:
+        link.send_and_wait("STOP")
+        link.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+def run_sim():
+    """Validate the control loop with no hardware: a simulated robot + drift.
+
+    Builds a zig-zag path, starts the virtual robot facing the wrong way and
+    with turn/forward gain error plus lateral noise, then checks the loop drives
+    it to the final waypoint anyway (proving feedback corrects accumulated drift).
+    """
+    px_per_mm = 0.35
+    waypoints = [(100.0, 400.0), (250.0, 250.0), (450.0, 300.0),
+                 (520.0, 120.0), (300.0, 100.0)]
+    start_pose = (100.0, 400.0, 0.0)   # facing +x (right), but first leg goes up-right
+
+    sim = SimLink(start_pose, px_per_mm,
+                  turn_gain=1.06, fwd_gain=0.95, lateral_noise_mm=4.0, seed=1)
+
+    steps = {"n": 0}
+
+    def get_pose():
+        return sim.pose()
+
+    def on_step(pose, target, idx, cmd):
+        steps["n"] += 1
+
+    ok = follow_path(get_pose, sim, list(waypoints), px_per_mm,
+                     face_deg=180.0, on_step=on_step)
+
+    fx, fy, fh = sim.pose()
+    goal = waypoints[-1]
+    err_px = math.hypot(fx - goal[0], fy - goal[1])
+    print("sim: completed={} steps={} final=({:.1f},{:.1f},{:.0f}deg)".format(
+        ok, steps["n"], fx, fy, fh))
+    print("sim: distance from final waypoint = {:.1f}px "
+          "(arrive tol {:.0f}px) -> {}".format(
+              err_px, ARRIVE_PX, "PASS" if err_px < ARRIVE_PX + 5 else "FAIL"))
+    print("sim: facing error vs hole(180) = {:.1f} deg".format(
+        (180.0 - fh + 180.0) % 360.0 - 180.0))
+
+
+def main():
+    args = sys.argv[1:]
+    camera_index = CAMERA_INDEX
+    if "--camera" in args:
+        camera_index = int(args[args.index("--camera") + 1])
+
+    if "--sim" in args:
+        run_sim()
+    elif "--probe" in args:
+        run_probe(camera_index)
+    elif "--plan-only" in args:
+        run_plan_only(camera_index)
+    else:
+        # Transport: --tcp <host>[:port] (WiFi) or default Bluetooth.
+        if "--tcp" in args:
+            spec = args[args.index("--tcp") + 1]
+            host, _, port = spec.partition(":")
+            link = TCPLink(host, int(port) if port else 9999)
+        else:
+            link = BluetoothLink()
+        run_live(camera_index, link)
+
+
+if __name__ == "__main__":
+    main()
