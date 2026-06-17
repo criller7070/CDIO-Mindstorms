@@ -20,6 +20,7 @@ class BallDetector:
         self.ball_match_distance = 18
         self._ball_tracks       = {"WHITE": [], "ORANGE": []}
         self.min_red_line_length = 50
+        self._center_ema        = None   # smoothed centre position (x, y)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -67,34 +68,56 @@ class BallDetector:
             'frame_w': fw,
         }
 
-    @staticmethod
-    def _detect_center(red_cnts, field_bounds, field_detected):
-        """Return the pixel position of the centre obstacle.
+    # EMA weight for centre smoothing (0 = frozen, 1 = no smoothing).
+    CENTER_SMOOTHING = 0.3
 
-        When field is detected, looks for inner red contours (the X marker)
-        in the central 50 % of the field to find the true obstacle centre.
-        Falls back to the geometric midpoint of the field bounds.
+    def _detect_center(self, red_cnts, field_bounds, field_detected):
+        """Return the pixel position of the centre obstacle (the red X marker).
+
+        Among red contours whose centroid lies in the central 50 % of the
+        field, pick the single contour closest to the field centre — skipping
+        the field-boundary contour (too large) and noise specks (too small).
+        Its area-weighted centroid (cv2.moments) is the marker position, then
+        an EMA suppresses residual frame-to-frame jitter.  Falls back to the
+        geometric midpoint of the field bounds when no marker is found.
         """
         x0, y0, x1, y1 = field_bounds
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        if not field_detected or not red_cnts:
-            return (cx, cy)
-        bw, bh = x1 - x0, y1 - y0
-        mfx, mfy = bw * 0.25, bh * 0.25
-        inner = []
-        for cnt in red_cnts:
-            M = cv2.moments(cnt)
-            if M['m00'] == 0:
-                continue
-            ccx = M['m10'] / M['m00']
-            ccy = M['m01'] / M['m00']
-            if x0 + mfx <= ccx <= x1 - mfx and y0 + mfy <= ccy <= y1 - mfy:
-                inner.append(cnt)
-        if inner:
-            pts = np.vstack(inner)
-            cx = int(np.mean(pts[:, 0, 0]))
-            cy = int(np.mean(pts[:, 0, 1]))
-        return (cx, cy)
+        fcx, fcy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+        raw = None
+        if field_detected and red_cnts:
+            bw, bh = x1 - x0, y1 - y0
+            mfx, mfy = bw * 0.25, bh * 0.25
+            field_area = max(bw * bh, 1)
+            best_d = None
+            for cnt in red_cnts:
+                M = cv2.moments(cnt)
+                area = M['m00']
+                if area == 0:
+                    continue
+                # Skip the field-boundary contour and tiny noise specks.
+                if area > 0.15 * field_area or area < 40:
+                    continue
+                ccx = M['m10'] / area
+                ccy = M['m01'] / area
+                if not (x0 + mfx <= ccx <= x1 - mfx
+                        and y0 + mfy <= ccy <= y1 - mfy):
+                    continue
+                d = (ccx - fcx) ** 2 + (ccy - fcy) ** 2
+                if best_d is None or d < best_d:
+                    best_d = d
+                    raw = (ccx, ccy)
+
+        if raw is None:
+            raw = (fcx, fcy)
+
+        if self._center_ema is None:
+            self._center_ema = raw
+        else:
+            a = self.CENTER_SMOOTHING
+            self._center_ema = (self._center_ema[0] * (1 - a) + raw[0] * a,
+                                self._center_ema[1] * (1 - a) + raw[1] * a)
+        return (int(round(self._center_ema[0])), int(round(self._center_ema[1])))
 
     @staticmethod
     def _detect_wall_margin(red_mask, field_bounds):
