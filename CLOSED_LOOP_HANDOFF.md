@@ -41,11 +41,26 @@ process, so they cooperate through a sequence-numbered file bridge
    Print it, mount **flat on top of the robot, top edge toward the FRONT, white border
    intact** (the quiet zone is essential — black-on-black is undetectable).
 
-2. **On the robot** (two SSH shells, in `~/CDIO-Mindstorms/robot`):
+2. **Connect to the robot** (it's on WiFi at `10.56.138.36`):
+   ```
+   ssh robot@10.56.138.36
+   ```
+   Authenticate with the robot's password when prompted (the standard ev3dev
+   `robot` account). Open **two** SSH shells — one for each process below — or run
+   the first in the background. The repo lives at `~/CDIO-Mindstorms` (i.e.
+   `/home/robot/CDIO-Mindstorms`).
+
+   Then, in `~/CDIO-Mindstorms/robot`:
    ```
    python3 ev3_server.py --tcp
    brickrun -- pybricks-micropython /home/robot/CDIO-Mindstorms/robot/main.py --follow
    ```
+   > **IP note:** `10.56.138.36` is the robot's current DHCP address — it can
+   > change. Confirm it on the EV3 (its WiFi status / `hostname -I` over a known
+   > connection) and pass the right IP to the PC controller below.
+   >
+   > A temporary SSH public key labelled `claude-cdio` was added to the robot's
+   > `~/.ssh/authorized_keys` during development; remove that line if you want.
    (Use the **absolute path** for `main.py` — `brickrun` changes the working dir.)
    The bridge takes ~10 s to start on the EV3 (slow ARM); wait until it prints
    `LISTENING` / port 9999 is open before connecting.
