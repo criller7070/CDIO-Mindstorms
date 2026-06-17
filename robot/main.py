@@ -71,7 +71,7 @@ class EV3NavController:
                 self.left_motor,
                 self.right_motor,
                 wheel_diameter=6.0,    # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)=6.035≈6
-                axle_track=118        # center-to-center between tracks: 100mm gap + ~18mm track width
+                axle_track=118        # physical center-to-center: 100mm gap + 18mm track width
             )
             print("[OK] DriveBase initialized")
             self.ev3.screen.clear()
@@ -210,7 +210,8 @@ class EV3NavController:
                         self.robot.stop()
                         print("[TURN] done, final angle={}".format(self.gyro.angle()))
                     elif self.robot:
-                        self.robot.turn(value)
+                        scaled = int(round(value * 0.24))
+                        self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
