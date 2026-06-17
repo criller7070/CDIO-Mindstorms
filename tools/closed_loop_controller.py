@@ -80,6 +80,10 @@ DENSIFY_GAP_PX = 30.0   # maximum pixel gap between consecutive waypoints after
                         # segment so the heading correction fires every ~11 mm of
                         # travel, preventing lateral drift from accumulating over a
                         # long single step.
+GATE_OPEN_DEG  = 90    # motor angle sent with GATE_OPEN (open to collect a ball)
+GATE_CLOSE_DEG = 90    # motor angle sent with GATE_CLOSE (close to retain a ball)
+BALL_GATE_THRESHOLD_PX = 40  # waypoint is treated as a ball pickup point when
+                              # it is within this many pixels of a detected ball
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -322,7 +326,7 @@ def _turn_command(err_deg):
 
 
 def follow_path(get_pose, link, waypoints, px_per_mm,
-                face_deg=None, on_step=None, replan=None):
+                face_deg=None, on_step=None, on_arrive=None, replan=None):
     """Drive the robot through `waypoints` using live pose feedback.
 
     get_pose(): -> (x, y, heading_deg) in image space, or None when the robot
@@ -364,6 +368,8 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         dist = math.hypot(dx, dy)
 
         if dist < ARRIVE_PX:
+            if on_arrive:
+                on_arrive(waypoints[idx], idx, waypoints)
             idx += 1
             continue
 
@@ -393,7 +399,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             fwd_steps += 1
 
         if on_step:
-            on_step(pose, waypoints[idx], idx, cmd)
+            on_step(pose, waypoints[idx], idx, cmd, len(waypoints))
         if not link.send_and_wait(cmd):
             print("No ack for {} — aborting.".format(cmd))
             return False
@@ -673,26 +679,65 @@ def run_live(camera_index, link):
             return None
         return source()
 
-    def on_step(pose, target, idx, cmd):
+    def on_step(pose, target, idx, cmd, total_wps):
         source.target = target
         dist = math.hypot(target[0] - pose[0], target[1] - pose[1])
         print("wp {}/{} pose=({},{},{:.0f}) dist={:.0f}px -> {}".format(
-            idx + 1, len(waypoints), pose[0], pose[1], pose[2], dist, cmd))
+            idx + 1, total_wps, pose[0], pose[1], pose[2], dist, cmd))
+
+    # Gate state: track which balls we've opened/closed for and the dropoff.
+    gate_state = {
+        'ball_pxs': [(b['x'], b['y']) for b in analysis['balls']],
+        'dropoff':  dropoff,
+        'open':     False,
+    }
+
+    def _near_ball(wp):
+        bps = gate_state['ball_pxs']
+        if not bps:
+            return False
+        return min(math.hypot(wp[0]-b[0], wp[1]-b[1]) for b in bps) < BALL_GATE_THRESHOLD_PX
+
+    # (no _near_dropoff — we use the exact last waypoint index instead)
+
+    def on_arrive(waypoint, idx, wps):
+        if _near_ball(waypoint) and gate_state['open']:
+            link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
+            gate_state['open'] = False
+            print("[GATE] CLOSE — ball retained")
+        # Release at the very last waypoint (always the dropoff)
+        if idx == len(wps) - 1 and not gate_state['open']:
+            link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
+            gate_state['open'] = True
+            print("[GATE] OPEN — releasing at dropoff")
+        # Pre-open gate when a ball is within the next 4 waypoints (~90 mm at
+        # typical camera scale) so the gate is fully deployed before the robot
+        # gets close enough to push the ball during the opening sweep.
+        if not gate_state['open']:
+            for look in range(1, min(5, len(wps) - idx)):
+                if _near_ball(wps[idx + look]):
+                    link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
+                    gate_state['open'] = True
+                    print("[GATE] OPEN — ball {} wp(s) ahead".format(look))
+                    break
 
     def replan():
         f = source.grab()
         p = detector.detect_robot(f)
         if p is None:
             return None
-        wp, *_ = plan_waypoints(detector, f, (p[0], p[1]))
+        wp, _, new_analysis, new_dropoff, _ = plan_waypoints(detector, f, (p[0], p[1]))
         wp = _densify_waypoints(wp)
         source.waypoints = wp
-        print("Re-planned: {} waypoints.".format(len(wp)))
+        gate_state['ball_pxs'] = [(b['x'], b['y']) for b in new_analysis['balls']]
+        gate_state['dropoff'] = new_dropoff
+        print("Re-planned: {} waypoints, {} balls.".format(len(wp), len(gate_state['ball_pxs'])))
         return wp
 
     try:
         ok = follow_path(get_pose, link, waypoints, planner.px_per_mm,
-                         face_deg=face_deg, on_step=on_step, replan=replan)
+                         face_deg=face_deg, on_step=on_step,
+                         on_arrive=on_arrive, replan=replan)
         print("Run complete." if ok else "Run aborted.")
     finally:
         link.send_and_wait("STOP")
@@ -727,7 +772,7 @@ def run_sim():
     def get_pose():
         return sim.pose()
 
-    def on_step(pose, target, idx, cmd):
+    def on_step(pose, target, idx, cmd, total_wps):
         steps["n"] += 1
         if cmd.startswith("TURN"):
             steps["turns"] += 1
