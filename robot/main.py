@@ -12,6 +12,7 @@ from pybricks.parameters import Port, Color
 from pybricks.robotics import DriveBase
 import time
 import threading
+import os
 
 class EV3NavController:
     def __init__(self):
@@ -71,7 +72,7 @@ class EV3NavController:
                 self.left_motor,
                 self.right_motor,
                 wheel_diameter=6.0,    # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)=6.035≈6
-                axle_track=118        # physical center-to-center: 100mm gap + 18mm track width
+                axle_track=43         # center-to-center between tracks (mm)
             )
             print("[OK] DriveBase initialized")
             self.ev3.screen.clear()
@@ -197,26 +198,22 @@ class EV3NavController:
                         # has TRAVELED abs(value) degrees. Compared on magnitude so it
                         # works regardless of the gyro's sign convention.
                         print("[TURN] gyro closed-loop, target={} deg".format(value))
-                        initial = self.gyro.angle()
+                        self.gyro.reset_angle(0)
                         target = abs(value)
                         rate = self.turn_speed if value > 0 else -self.turn_speed
                         last_logged = 0
-                        while True:
-                            current = self.gyro.angle()
-                            if current == -32768:
-                                self.robot.drive(0, rate)
-                                continue
-                            traveled = abs(current - initial)
-                            if traveled >= target - 10:
-                                break
+                        while abs(self.gyro.angle()) < target:
                             self.robot.drive(0, rate)
+                            traveled = abs(self.gyro.angle())
                             if traveled - last_logged >= 30:
-                                print("[TURN] angle={} (traveled={})".format(current, traveled))
+                                print("[TURN] angle={}".format(self.gyro.angle()))
                                 last_logged = traveled
                         self.robot.stop()
-                        print("[TURN] done, traveled={}".format(abs(self.gyro.angle() - initial)))
+                        print("[TURN] done, final angle={}".format(self.gyro.angle()))
                     elif self.robot:
-                        scaled = int(round(value * 0.24))
+                        # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
+                        scaled = int(round(value * 1.3198))
+			#scaled = int((round(value * 736.5 / 90.0))/4)
                         self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
@@ -405,6 +402,64 @@ class EV3NavController:
         
     
     
+    # File bridge shared with ev3_server.py (the Bluetooth process).
+    CL_CMD_FILE = "/home/robot/cl_cmd.txt"
+    CL_ACK_FILE = "/home/robot/cl_ack.txt"
+
+    def run_follow_loop(self):
+        """Persistent closed-loop executor.
+
+        The PC's closed_loop_controller streams ONE command at a time. The
+        Bluetooth process (ev3_server.py) drops each into CL_CMD_FILE tagged
+        with a sequence number; we execute it and stamp CL_ACK_FILE with the
+        same sequence so the bridge can return DONE to the PC. This is what
+        lets the host re-observe the robot after every single move and keep it
+        on track, instead of dead-reckoning a whole mission.
+        """
+        self.ev3.screen.clear()
+        self.ev3.screen.print("Follow mode")
+        self.ev3.speaker.say("Follow mode")
+        self.ev3.light.on(Color.GREEN)
+        self._log("Follow loop ready")
+
+        # Seed the ack file so a stale value can't be mistaken for a real one.
+        self._write_ack(-1)
+        last_seq = -1
+
+        while True:
+            seq, cmd = self._read_command()
+            if seq is None or seq == last_seq or seq < 0:
+                time.sleep(0.02)
+                continue
+
+            self.ev3.screen.clear()
+            self.ev3.screen.print("#{}: {}".format(seq, cmd[:14]))
+            self.execute_command(cmd)
+            last_seq = seq
+            self._write_ack(seq)
+
+    def _read_command(self):
+        """Return (seq, command) from CL_CMD_FILE, or (None, None) on any error."""
+        try:
+            with open(self.CL_CMD_FILE, "r") as f:
+                line = f.readline().strip()
+            parts = line.split(" ", 1)
+            seq = int(parts[0])
+            cmd = parts[1] if len(parts) > 1 else ""
+            return seq, cmd
+        except (OSError, ValueError, IndexError):
+            return None, None
+
+    def _write_ack(self, seq):
+        """Atomically stamp CL_ACK_FILE with seq (write temp, then rename)."""
+        tmp = self.CL_ACK_FILE + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write("{} DONE\n".format(seq))
+            os.rename(tmp, self.CL_ACK_FILE)
+        except OSError as e:
+            self._log("ack write failed: {}".format(str(e)[:15]))
+
     def execute_mission(self, mission_file="commands.txt"):
         """Read mission file and execute all commands in sequence"""
         self.mission_start_time = time.time()
@@ -572,7 +627,16 @@ def main():
         except Exception as e:
             print("[ERROR] Diagnostics failed: {}".format(str(e)))
         return
-    
+
+    # Closed-loop follow mode: execute single commands streamed from the PC.
+    if "--follow" in sys.argv:
+        try:
+            controller = EV3NavController()
+            controller.run_follow_loop()
+        except Exception as e:
+            print("[FATAL ERROR] {}".format(str(e)))
+        return
+
     # Normal mission execution
     try:
         controller = EV3NavController()
