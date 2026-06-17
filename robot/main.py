@@ -157,7 +157,7 @@ class EV3NavController:
                 if value > 0:
                     self._log("FWD {} mm".format(value))
                     if self.robot:
-                        self.robot.straight(-value / 3.33)
+                        self.robot.straight(-value / 3.2288)
                     else:
                         # Fallback: drive both motors in parallel
                         rotations = (value * 360) // 62  # Calibrated: 62mm per wheel rotation at 17mm diameter
