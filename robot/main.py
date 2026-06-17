@@ -15,16 +15,16 @@ import threading
 import os
 
 # Constants
-WHEEL_DIAMETER          = 6.0    # mm  — effective rolling diameter of tracks
-AXLE_TRACK              = 43     # mm  — effective turn radius (empirical; physical is 118 mm but tracks slip)
+WHEEL_DIAMETER          = 6.0    # mm  - effective rolling diameter of tracks
+AXLE_TRACK              = 43     # mm  - effective turn radius (empirical; physical is 118 mm but tracks slip)
 
-FORWARD_SPEED           = 200    # mm/s  — default forward speed
-TURN_SPEED              = 200    # deg/s — default turn rate
-LIFT_SPEED              = 150    # deg/s — lift motor speed
-SPIN_SPEED              = 300    # deg/s — spin motor speed
-GATE_SPEED              = 200    # deg/s — gate motor speed
+FORWARD_SPEED           = 200    # mm/s  - default forward speed
+TURN_SPEED              = 200    # deg/s - default turn rate
+LIFT_SPEED              = 150    # deg/s - lift motor speed
+SPIN_SPEED              = 300    # deg/s - spin motor speed
+GATE_SPEED              = 200    # deg/s - gate motor speed
 
-GYRO_BRAKE_OFFSET       = 12     # deg  — stop gyro loop this many degrees early to account for motor inertia
+GYRO_BRAKE_OFFSET       = 12     # deg  - stop gyro loop this many degrees early to account for motor inertia
 
 FORWARD_DRIVEBASE_SCALE = 3.2288 # divide commanded mm by this for DriveBase.straight()
 DRIVEBASE_TURN_SCALE    = 1.3198 # multiply commanded degrees by this for DriveBase.turn() (no gyro)
