@@ -28,6 +28,7 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import sys
 import math
 import time
+import threading
 
 import cv2
 import numpy as np
@@ -43,7 +44,7 @@ from vision_detector import BallDetector
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX      = 32.0   # waypoint counts as reached within this many pixels.
+ARRIVE_PX      = 35.0   # waypoint counts as reached within this many pixels.
                         # Must exceed one forward step, or the robot steps PAST a
                         # waypoint without registering arrival and spins to go back.
 TURN_TOL_DEG   = 12.0   # rotate only for heading errors larger than this. Must
@@ -55,18 +56,30 @@ TURN_COMMIT_DEG = 45.0  # after a turn, drive a forward step before turning agai
 # Measured EV3 follow-mode turn response: actual = TURN_SLOPE*commanded + coast.
 # Compensate so a requested heading change actually lands on target:
 #   command = (desired - TURN_COAST_DEG) / TURN_SLOPE
-TURN_SLOPE     = 1.05
-TURN_COAST_DEG = 8.0
-MAX_STEP_MM    = 50     # never drive more than this (physical mm) between observations
+# Recalibrated from run log (3 observed turns at 45 deg/s):
+#   cmd=104 → actual=108, cmd=61 → actual=63, cmd=156 → actual=158
+#   Best fit: actual ≈ 1.0*cmd + 3  (coast much smaller than original 8 deg)
+TURN_SLOPE     = 1.0
+TURN_COAST_DEG = 3.0
+MAX_STEP_MM    = 20     # never drive more than this (physical mm) between observations
+                        # CRITICAL: must satisfy MAX_STEP_MM * px_per_mm < ARRIVE_PX
+                        # or the robot overshoots waypoints and spins back (oscillation)
 MIN_STEP_MM    = 10     # smallest forward nudge worth sending
 # robot/main.py executes FORWARD:v as straight(-v / 3.2288), i.e. the command
 # value is ~3.2x the physical mm travelled. Scale the command so a requested
 # physical step actually moves that far (otherwise the robot crawls ~1/3 speed).
 FORWARD_CMD_SCALE = 3.2288
 MAX_POSE_MISS  = 60     # give up after this many consecutive frames with no marker
-REPLAN_PX      = 400.0  # only re-plan on MAJOR drift. Per-step heading correction
-                        # already steers to the current waypoint, so a low value
-                        # just churns (re-plans whenever the next waypoint is far).
+REPLAN_PX      = 150.0  # re-plan when robot is >150px off its target. Lower than
+                        # original 400 so drift is caught early, not just on major
+                        # divergence. Per-step heading correction handles smaller errors.
+REPLAN_EVERY_N = 8      # also force a replan after every N forward steps so ball
+                        # positions are refreshed even when drift is under REPLAN_PX.
+DENSIFY_GAP_PX = 30.0   # maximum pixel gap between consecutive waypoints after
+                        # densification.  Intermediate points are inserted along each
+                        # segment so the heading correction fires every ~11 mm of
+                        # travel, preventing lateral drift from accumulating over a
+                        # long single step.
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -270,6 +283,31 @@ def _flatten_segs(segs, min_gap_px=6.0):
     return pts
 
 
+def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
+    """Insert intermediate checkpoints so no consecutive pair is more than
+    max_gap_px apart.
+
+    Each checkpoint forces a pose measurement and heading correction, so
+    lateral drift can't accumulate over a long single forward step.  At the
+    typical camera scale (~3.5 px/mm) a 40 px gap equals ~11 mm of travel —
+    roughly a quarter of a golf ball diameter.
+    """
+    if len(waypoints) < 2:
+        return list(waypoints)
+    dense = [waypoints[0]]
+    for p1 in waypoints[1:]:
+        p0 = dense[-1]
+        d = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        if d > max_gap_px:
+            n = int(math.ceil(d / max_gap_px))
+            for j in range(1, n):
+                t = j / n
+                dense.append((p0[0] + t * (p1[0] - p0[0]),
+                               p0[1] + t * (p1[1] - p0[1])))
+        dense.append(p1)
+    return dense
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # The control loop.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -299,6 +337,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
     misses = 0
     just_turned = False   # don't turn twice in a row (anti-oscillation)
     steps = 0
+    fwd_steps = 0         # count forward steps for periodic replan
     max_steps = 40 * len(waypoints) + 60   # guard against a non-converging loop
 
     while idx < len(waypoints):
@@ -315,6 +354,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             if misses >= MAX_POSE_MISS:
                 print("Lost the robot marker for too long — aborting.")
                 return False
+            time.sleep(0.05)   # avoid tight-looping while waiting for marker
             continue
         misses = 0
 
@@ -350,12 +390,25 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
             cmd = "FORWARD:{}".format(int(round(step_mm * FORWARD_CMD_SCALE)))
             just_turned = False
+            fwd_steps += 1
 
         if on_step:
             on_step(pose, waypoints[idx], idx, cmd)
         if not link.send_and_wait(cmd):
             print("No ack for {} — aborting.".format(cmd))
             return False
+
+        # Periodic replan: refresh ball positions and recalculate route from
+        # current pose every REPLAN_EVERY_N forward steps, even when drift is
+        # small. This corrects for accumulated position error and re-detects
+        # balls that have moved or were missed in the initial plan.
+        if (not turn_now and replan is not None
+                and fwd_steps > 0 and fwd_steps % REPLAN_EVERY_N == 0):
+            new_wp = replan()
+            if new_wp:
+                waypoints = new_wp
+                idx = 0
+                max_steps = 40 * len(waypoints) + 60
 
     # Arrived: optionally face the hole, then stop.
     if face_deg is not None:
@@ -372,53 +425,73 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
 # Live camera pose source.
 # ──────────────────────────────────────────────────────────────────────────────
 class CameraPoseSource:
-    """Grabs a fresh frame and returns the robot's ArUco pose.
+    """Continuously grabs frames on a background thread so the control loop
+    always gets a fresh pose — even after a long blocking send_and_wait().
 
-    Flushes a few buffered frames first so that, right after a blocking move,
-    we read where the robot ACTUALLY is now — not a stale frame from mid-move.
-    Optionally renders a debug window; press 'q' there to abort.
+    Previously, reads happened on the main thread with a small flush buffer,
+    so frames could pile up during a blocking move and detection would
+    momentarily fail on the stale frames that followed.  The background thread
+    eliminates that: it drains the camera as fast as it can, so __call__()
+    always sees the most recently captured frame.
+
+    The debug window (imshow) runs inside the grab loop thread so the view
+    refreshes at camera frame rate even while the main thread is blocked
+    inside send_and_wait(). On Linux/X11 this is safe; imshow/waitKey can
+    be called from non-main threads.
     """
 
-    def __init__(self, cap, detector, flip=True, show=True, flush=2):
+    def __init__(self, cap, detector, flip=True, show=True):
         self.cap = cap
         self.detector = detector
         self.flip = flip
         self.show = show
-        self.flush = flush
         self.aborted = False
         self.target = None
         self.waypoints = None
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._latest_pose = None
+        self._running = True
+        self._thread = threading.Thread(target=self._grab_loop, daemon=True)
+        self._thread.start()
+
+    def _grab_loop(self):
+        while self._running:
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            if self.flip:
+                frame = cv2.flip(frame, 1)
+            pose = self.detector.detect_robot(frame)
+            with self._lock:
+                self._latest_frame = frame
+                self._latest_pose = pose
+                waypoints = self.waypoints   # snapshot for render — benign race
+                target = self.target
+            if self.show:
+                self._render(frame, pose, waypoints, target)
 
     def grab(self):
-        frame = None
-        for _ in range(self.flush):
-            ret, f = self.cap.read()
-            if ret:
-                frame = f
-        if frame is None:
-            return None
-        if self.flip:
-            frame = cv2.flip(frame, 1)
-        return frame
+        with self._lock:
+            return self._latest_frame
+
+    def stop(self):
+        self._running = False
+        self._thread.join(timeout=2.0)
 
     def __call__(self):
-        frame = self.grab()
-        if frame is None:
-            return None
-        pose = self.detector.detect_robot(frame)
-        if self.show:
-            self._render(frame, pose)
-        return pose
+        with self._lock:
+            return self._latest_pose
 
-    def _render(self, frame, pose):
+    def _render(self, frame, pose, waypoints, target):
         vis = frame.copy()
-        if self.waypoints:
-            for i in range(1, len(self.waypoints)):
-                p0 = tuple(map(int, self.waypoints[i - 1]))
-                p1 = tuple(map(int, self.waypoints[i]))
+        if waypoints:
+            for i in range(1, len(waypoints)):
+                p0 = tuple(map(int, waypoints[i - 1]))
+                p1 = tuple(map(int, waypoints[i]))
                 cv2.line(vis, p0, p1, (80, 80, 80), 1)
-        if self.target is not None:
-            t = tuple(map(int, self.target))
+        if target is not None:
+            t = tuple(map(int, target))
             cv2.circle(vis, t, int(ARRIVE_PX), (255, 0, 255), 1)
             cv2.drawMarker(vis, t, (255, 0, 255), cv2.MARKER_TILTED_CROSS, 12, 2)
         if pose is not None:
@@ -550,26 +623,48 @@ def run_live(camera_index, link):
     for _ in range(200):
         robot_pose = source()
         if source.aborted:
-            cap.release(); cv2.destroyAllWindows(); return
+            source.stop(); cap.release(); cv2.destroyAllWindows(); return
         if robot_pose is not None:
             break
+        time.sleep(0.05)
     if robot_pose is None:
         print("Never saw the robot marker — aborting.")
-        cap.release(); cv2.destroyAllWindows(); return
+        source.stop(); cap.release(); cv2.destroyAllWindows(); return
+
+    # Warm up the ball tracker: feed several frames so balls accumulate enough
+    # consecutive hits to pass ball_confirm_frames. Without this, planning on a
+    # single frame always returns 0 balls (need 7 hits but only 1 frame given).
+    detector.ball_confirm_frames = 1  # single-frame is fine for planning
+    for _ in range(5):
+        f = source.grab()
+        if f is not None:
+            detector.analyze_course(f)
+        time.sleep(0.05)
 
     frame = source.grab()
     robot_pos = (robot_pose[0], robot_pose[1])
     waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
         detector, frame, robot_pos)
+    waypoints = _densify_waypoints(waypoints)
     source.waypoints = waypoints
+    print("Robot at {} heading {:.1f}deg".format(robot_pos, robot_pose[2]))
+    print("Field detected: {}  bounds: {}".format(
+        analysis['field_detected'], analysis['field_bounds']))
+    print("Balls found: {}  dropoff: {}".format(
+        len(analysis['balls']), dropoff))
+    print("Waypoints ({}): {}".format(len(waypoints),
+        [(int(x), int(y)) for x, y in waypoints[:10]]))
     if not waypoints:
         print("Planner produced no path — nothing to do.")
-        cap.release(); cv2.destroyAllWindows(); return
+        source.stop(); cap.release(); cv2.destroyAllWindows(); return
     print("Planned {} waypoints.".format(len(waypoints)))
+    print("px_per_mm: {:.3f}  MAX_STEP_MM: {}  step_px: {:.1f}  ARRIVE_PX: {}".format(
+        planner.px_per_mm, MAX_STEP_MM,
+        MAX_STEP_MM * planner.px_per_mm, ARRIVE_PX))
 
     if not link.connect():
         print("ERROR: could not connect/handshake with the EV3 bridge.")
-        cap.release(); cv2.destroyAllWindows(); return
+        source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     link.send_and_wait("SPEED:300")
 
@@ -580,8 +675,9 @@ def run_live(camera_index, link):
 
     def on_step(pose, target, idx, cmd):
         source.target = target
-        print("wp {}/{} pose=({},{},{:.0f}) -> {}".format(
-            idx + 1, len(waypoints), pose[0], pose[1], pose[2], cmd))
+        dist = math.hypot(target[0] - pose[0], target[1] - pose[1])
+        print("wp {}/{} pose=({},{},{:.0f}) dist={:.0f}px -> {}".format(
+            idx + 1, len(waypoints), pose[0], pose[1], pose[2], dist, cmd))
 
     def replan():
         f = source.grab()
@@ -589,6 +685,7 @@ def run_live(camera_index, link):
         if p is None:
             return None
         wp, *_ = plan_waypoints(detector, f, (p[0], p[1]))
+        wp = _densify_waypoints(wp)
         source.waypoints = wp
         print("Re-planned: {} waypoints.".format(len(wp)))
         return wp
@@ -600,6 +697,7 @@ def run_live(camera_index, link):
     finally:
         link.send_and_wait("STOP")
         link.close()
+        source.stop()
         cap.release()
         cv2.destroyAllWindows()
 
