@@ -60,14 +60,17 @@ def wait_for_ack(seq, timeout=ACK_TIMEOUT):
     return False
 
 
-def serve(client):
-    seq = 0
+def serve(client, seq):
+    """Handle one PC connection. `seq` is the running command counter, which
+    must keep increasing ACROSS connections so it never collides with the
+    executor's last-processed sequence (a reconnect that restarted at 1 could
+    otherwise be skipped). Returns the updated counter."""
     buf = ""
     while True:
         data = client.recv(1024)
         if not data:
             print("PC closed the connection.")
-            return
+            return seq
         buf += data.decode("utf-8", errors="ignore")
 
         while "\n" in buf:
@@ -118,12 +121,13 @@ def main():
     else:
         server = make_bluetooth_server()
 
+    seq = 0
     try:
         while True:
             client, addr = server.accept()
             print("Connected: {}".format(addr))
             try:
-                serve(client)
+                seq = serve(client, seq)
             except OSError as e:
                 print("Connection error: {}".format(e))
             finally:
