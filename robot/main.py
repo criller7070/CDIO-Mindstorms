@@ -197,18 +197,24 @@ class EV3NavController:
                         # has TRAVELED abs(value) degrees. Compared on magnitude so it
                         # works regardless of the gyro's sign convention.
                         print("[TURN] gyro closed-loop, target={} deg".format(value))
-                        self.gyro.reset_angle(0)
+                        initial = self.gyro.angle()
                         target = abs(value)
                         rate = self.turn_speed if value > 0 else -self.turn_speed
                         last_logged = 0
-                        while abs(self.gyro.angle()) < target:
+                        while True:
+                            current = self.gyro.angle()
+                            if current == -32768:
+                                self.robot.drive(0, rate)
+                                continue
+                            traveled = abs(current - initial)
+                            if traveled >= target - 10:
+                                break
                             self.robot.drive(0, rate)
-                            traveled = abs(self.gyro.angle())
                             if traveled - last_logged >= 30:
-                                print("[TURN] angle={}".format(self.gyro.angle()))
+                                print("[TURN] angle={} (traveled={})".format(current, traveled))
                                 last_logged = traveled
                         self.robot.stop()
-                        print("[TURN] done, final angle={}".format(self.gyro.angle()))
+                        print("[TURN] done, traveled={}".format(abs(self.gyro.angle() - initial)))
                     elif self.robot:
                         scaled = int(round(value * 0.24))
                         self.robot.turn(scaled)
