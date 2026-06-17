@@ -109,9 +109,16 @@ def make_bluetooth_server():
 
 
 def main():
-    # Clear any stale bridge state from a previous run.
-    write_atomic(CMD_FILE, "-1 INIT\n")
-    write_atomic(ACK_FILE, "-1 INIT\n")
+    # Resume the command counter from disk so a bridge restart never reuses a
+    # sequence the (still-running) executor has already processed. Only seed the
+    # files when they're missing/invalid, so we don't clobber a live executor's
+    # in-progress ack.
+    seq = read_seq(CMD_FILE)
+    if seq < 0:
+        seq = 0
+        write_atomic(CMD_FILE, "0 INIT\n")
+    if read_seq(ACK_FILE) < 0:
+        write_atomic(ACK_FILE, "0 INIT\n")
 
     if "--tcp" in sys.argv:
         i = sys.argv.index("--tcp")
@@ -121,7 +128,6 @@ def main():
     else:
         server = make_bluetooth_server()
 
-    seq = 0
     try:
         while True:
             client, addr = server.accept()
