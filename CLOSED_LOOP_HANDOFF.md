@@ -86,6 +86,44 @@ fuser -k 9999/tcp   # kills ev3_server, stops command flow
 **NEVER** use `pkill -f ev3_server` over SSH — the pattern matches your SSH shell's
 command line and kills the session. Use `fuser -k 9999/tcp` or explicit PIDs.
 
+### 4. Between runs (restarting just the PC controller)
+
+You do **not** need to restart the EV3 processes between runs as long as TCP stayed
+healthy. Just relaunch the PC controller:
+
+```bash
+# Check that EV3 processes are still alive:
+ssh robot@10.56.138.36 "fuser 9999/tcp && ps aux | grep -E 'ev3_server|main.py' | grep -v grep"
+
+# If still alive, just re-run the PC side:
+QT_QPA_PLATFORM=xcb python3 -u closed_loop_controller.py --tcp 10.56.138.36
+```
+
+**Restart the EV3 only when:**
+- A TCP command timed out (connection may be in a bad state)
+- The gate motor stalled (motor position is unknown; restart resets it to 0)
+- `main.py --follow` printed an error and exited
+- You want the gate to start from a known closed position
+
+To restart EV3 processes cleanly:
+```bash
+ssh robot@10.56.138.36 "fuser -k 9999/tcp 2>/dev/null; pkill -f 'brickrun|pybricks-micropython.*main' 2>/dev/null; sleep 1; \
+  nohup python3 /home/robot/CDIO-Mindstorms/robot/ev3_server.py --tcp > /tmp/ev3.log 2>&1 & \
+  sleep 1 && nohup brickrun -r -- pybricks-micropython /home/robot/CDIO-Mindstorms/robot/main.py --follow > /tmp/main.log 2>&1 &"
+# Then wait ~5 s and check: ssh robot@10.56.138.36 "tail /tmp/main.log"
+```
+
+### 5. Common mistakes that waste time
+
+| Mistake | Symptom | Fix |
+|---------|---------|-----|
+| Forgot `--tcp 10.56.138.36` | "No Bluetooth devices found!" and exit | Always pass `--tcp <ip>` |
+| Ran without `QT_QPA_PLATFORM=xcb` | Camera window never appears, controller hangs waiting for `q` | Export the variable or prepend it |
+| Ran without `python3 -u` | Can't tail the log — output only appears after the run ends | Always use `-u` flag |
+| `pkill -f ev3_server` over SSH | SSH session dies immediately | Use `fuser -k 9999/tcp` |
+| Gate motor stalled mid-run | TCP timeout on GATE_OPEN/CLOSE, then navigation may abort | Restart EV3 processes |
+| Ran `python3 -m tools.closed_loop_controller` from repo root | `ModuleNotFoundError: tools_path_planner` | Run from **inside** `tools/` directory |
+
 ---
 
 ## Connection details
