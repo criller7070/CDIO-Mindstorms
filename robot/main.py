@@ -14,6 +14,28 @@ import time
 import threading
 import os
 
+# Constants
+WHEEL_DIAMETER          = 6.0    # mm  — effective rolling diameter of tracks
+AXLE_TRACK              = 43     # mm  — effective turn radius (empirical; physical is 118 mm but tracks slip)
+
+FORWARD_SPEED           = 200    # mm/s  — default forward speed
+TURN_SPEED              = 200    # deg/s — default turn rate
+LIFT_SPEED              = 150    # deg/s — lift motor speed
+SPIN_SPEED              = 300    # deg/s — spin motor speed
+GATE_SPEED              = 200    # deg/s — gate motor speed
+
+GYRO_BRAKE_OFFSET       = 12     # deg  — stop gyro loop this many degrees early to account for motor inertia
+
+FORWARD_DRIVEBASE_SCALE = 3.2288 # divide commanded mm by this for DriveBase.straight()
+DRIVEBASE_TURN_SCALE    = 1.3198 # multiply commanded degrees by this for DriveBase.turn() (no gyro)
+
+FORWARD_MM_PER_ROTATION = 62     # mm per motor rotation (fallback forward, no DriveBase)
+REVERSE_MM_PER_ROTATION = 174    # mm per motor rotation (fallback reverse, no DriveBase)
+FALLBACK_TURN_RATIO     = 736.5 / 90.0  # motor degrees per physical degree (fallback tank turn)
+
+LIFT_DOWN_MOTOR_RATIO   = 130.0 / 45.0  # motor degrees per physical degree (LIFT_DOWN)
+
+
 class EV3NavController:
     def __init__(self):
         """Initialize EV3 robot"""
@@ -27,7 +49,7 @@ class EV3NavController:
         
         # Spinning control
         self.spinning = False
-        self.spin_speed = 300
+        self.spin_speed = SPIN_SPEED
         
         # Test Port A
         try:
@@ -71,8 +93,8 @@ class EV3NavController:
             self.robot = DriveBase(
                 self.left_motor,
                 self.right_motor,
-                wheel_diameter=6.0,    # calibrated: 1000mm command → ~355mm actual at 17, so 17×(355/1000)=6.035≈6
-                axle_track=43         # center-to-center between tracks (mm)
+                wheel_diameter=WHEEL_DIAMETER,
+                axle_track=AXLE_TRACK
             )
             print("[OK] DriveBase initialized")
             self.ev3.screen.clear()
@@ -95,9 +117,9 @@ class EV3NavController:
             self.gyro = None
             print("[DEBUG] Gyro sensor not found or failed ({}); using default turning".format(str(e)[:30]))
         
-        self.forward_speed = 200
-        self.turn_speed = 200
-        self.lift_speed = 150
+        self.forward_speed = FORWARD_SPEED
+        self.turn_speed = TURN_SPEED
+        self.lift_speed = LIFT_SPEED
         
         self.commands_executed = 0
         self.commands_failed = 0
@@ -158,10 +180,10 @@ class EV3NavController:
                 if value > 0:
                     self._log("FWD {} mm".format(value))
                     if self.robot:
-                        self.robot.straight(-value / 3.2288)
+                        self.robot.straight(-value / FORWARD_DRIVEBASE_SCALE)
                     else:
                         # Fallback: drive both motors in parallel
-                        rotations = (value * 360) // 62  # Calibrated: 62mm per wheel rotation at 17mm diameter
+                        rotations = (value * 360) // FORWARD_MM_PER_ROTATION
                         self.left_motor.run_angle(-self.forward_speed, rotations, wait=False)
                         self.right_motor.run_angle(-self.forward_speed, rotations, wait=True)
                     self.commands_executed += 1
@@ -179,7 +201,7 @@ class EV3NavController:
                         self.robot.straight(value)
                     else:
                         # Fallback: reverse both motors in parallel
-                        rotations = (value * 360) // 174
+                        rotations = (value * 360) // REVERSE_MM_PER_ROTATION
                         self.left_motor.run_angle(self.forward_speed, rotations, wait=False)
                         self.right_motor.run_angle(self.forward_speed, rotations, wait=True)
                     self.commands_executed += 1
@@ -194,32 +216,37 @@ class EV3NavController:
                 if value != 0:
                     self._log("TURN {} deg".format(value))
                     if self.gyro and self.robot:
-                        # Closed-loop: turn in the commanded direction until the gyro
-                        # has TRAVELED abs(value) degrees. Compared on magnitude so it
-                        # works regardless of the gyro's sign convention.
-                        print("[TURN] gyro closed-loop, target={} deg".format(value))
-                        self.gyro.reset_angle(0)
+                        BRAKE_OFFSET = GYRO_BRAKE_OFFSET
                         target = abs(value)
+                        effective = target - BRAKE_OFFSET
+                        print("[TURN] requested={} deg | stopping at={} deg (brake offset={})".format(value, effective, BRAKE_OFFSET))
+                        initial = self.gyro.angle()
                         rate = self.turn_speed if value > 0 else -self.turn_speed
                         last_logged = 0
-                        while abs(self.gyro.angle()) < target:
+                        while True:
+                            current = self.gyro.angle()
+                            if current == -32768:
+                                self.robot.drive(0, rate)
+                                continue
+                            traveled = abs(current - initial)
+                            if traveled >= effective:
+                                break
                             self.robot.drive(0, rate)
-                            traveled = abs(self.gyro.angle())
                             if traveled - last_logged >= 30:
-                                print("[TURN] angle={}".format(self.gyro.angle()))
+                                print("[TURN] traveled={}/{} deg (gyro={})".format(traveled, effective, current))
                                 last_logged = traveled
                         self.robot.stop()
-                        print("[TURN] done, final angle={}".format(self.gyro.angle()))
+                        final = abs(self.gyro.angle() - initial)
+                        print("[TURN] done | requested={} deg | gyro traveled={} deg | drift={}".format(target, final, final - target))
                     elif self.robot:
                         # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
-                        scaled = int(round(value * 1.3198))
-			#scaled = int((round(value * 736.5 / 90.0))/4)
+                        scaled = int(round(value * DRIVEBASE_TURN_SCALE))
                         self.robot.turn(scaled)
                     else:
                         # Fallback: tank turn (both motors opposite directions in parallel)
                         # For continuous track, rotate both wheels in opposite directions
                         # Calibrated: 47 DriveBase degrees = 90 physical degrees
-                        motor_angle = int(round(abs(value) * 736.5 / 90.0))
+                        motor_angle = int(round(abs(value) * FALLBACK_TURN_RATIO))
                         if value > 0:
                             # Turn right: left forward, right backward
                             self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
@@ -335,8 +362,7 @@ class EV3NavController:
                 if self.lift_motor:
                     if value > 0:
                         self._log("LIFT DOWN {} deg".format(value))
-                        # Calibrated: 130 motor degrees = 45 physical degrees
-                        scaled = int(round(value * 130.0 / 45.0))
+                        scaled = int(round(value * LIFT_DOWN_MOTOR_RATIO))
                         self.lift_motor.run_angle(self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
@@ -353,7 +379,7 @@ class EV3NavController:
             elif cmd == "GATE_OPEN":
                 if self.gate_motor:
                     self._log("GATE OPEN {} deg".format(value))
-                    self.gate_motor.run_angle(-200, value)
+                    self.gate_motor.run_angle(-GATE_SPEED, value)
                     self.commands_executed += 1
                     return True
                 else:
@@ -364,7 +390,7 @@ class EV3NavController:
             elif cmd == "GATE_CLOSE":
                 if self.gate_motor:
                     self._log("GATE CLOSE {} deg".format(value))
-                    self.gate_motor.run_angle(200, value)
+                    self.gate_motor.run_angle(GATE_SPEED, value)
                     self.commands_executed += 1
                     return True
                 else:
