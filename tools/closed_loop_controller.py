@@ -43,12 +43,21 @@ from vision_detector import BallDetector
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX     = 18.0   # waypoint counts as reached within this many pixels
-TURN_TOL_DEG  = 6.0    # rotate to correct heading errors larger than this
-MAX_STEP_MM   = 50     # never drive more than this between observations
-MIN_STEP_MM   = 8      # smallest forward nudge worth sending
-MAX_POSE_MISS = 60     # give up after this many consecutive frames with no marker
-REPLAN_PX     = 90.0   # if the robot strays this far from the path, re-plan
+ARRIVE_PX      = 18.0   # waypoint counts as reached within this many pixels
+TURN_TOL_DEG   = 12.0   # rotate only for heading errors larger than this. Must
+                        # exceed the EV3 gyro turn's coast/overshoot, or the loop
+                        # limit-cycles (turn past target, correct back, repeat).
+TURN_COMMIT_DEG = 45.0  # after a turn, drive a forward step before turning again
+                        # unless the heading error still exceeds this. Prevents
+                        # turn-turn-turn oscillation from small overshoots.
+MAX_STEP_MM    = 50     # never drive more than this (physical mm) between observations
+MIN_STEP_MM    = 10     # smallest forward nudge worth sending
+# robot/main.py executes FORWARD:v as straight(-v / 3.2288), i.e. the command
+# value is ~3.2x the physical mm travelled. Scale the command so a requested
+# physical step actually moves that far (otherwise the robot crawls ~1/3 speed).
+FORWARD_CMD_SCALE = 3.2288
+MAX_POSE_MISS  = 60     # give up after this many consecutive frames with no marker
+REPLAN_PX      = 90.0   # if the robot strays this far from the path, re-plan
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,19 +149,21 @@ class TCPLink:
 class SimLink:
     """A virtual robot for testing the loop with no hardware.
 
-    Applies the SAME command semantics as robot/main.py (TURN degrees, FORWARD
-    mm, both already calibrated on the EV3 so commanded == physical) to an
-    internal pose.  Optional gains/noise simulate real-world error so we can
-    confirm the closed loop actually corrects drift.
+    Mirrors robot/main.py command semantics so the sim is faithful: FORWARD:v
+    moves v / FORWARD_CMD_SCALE physical mm, and TURN coasts a constant
+    `turn_overshoot_deg` past the commanded angle (the real cause of the limit
+    cycle this loop must avoid).  Optional gains/noise add error so we can
+    confirm the closed loop corrects drift without oscillating.
     """
 
     def __init__(self, pose, px_per_mm, turn_gain=1.0, fwd_gain=1.0,
-                 lateral_noise_mm=0.0, seed=0):
+                 lateral_noise_mm=0.0, turn_overshoot_deg=0.0, seed=0):
         self.x, self.y, self.heading = pose
         self.px_per_mm = px_per_mm
         self.turn_gain = turn_gain
         self.fwd_gain = fwd_gain
         self.lateral_noise_mm = lateral_noise_mm
+        self.turn_overshoot_deg = turn_overshoot_deg
         self.rng = np.random.default_rng(seed)
         self.trail = [(self.x, self.y)]
 
@@ -160,10 +171,14 @@ class SimLink:
         cmd, _, val = command.partition(":")
         cmd = cmd.strip().upper()
         if cmd == "TURN":
-            self.heading += float(val) * self.turn_gain
+            v = float(val)
+            applied = v * self.turn_gain
+            if v != 0:                       # constant coast past the target
+                applied += math.copysign(self.turn_overshoot_deg, v)
+            self.heading += applied
             self.heading = (self.heading + 180.0) % 360.0 - 180.0
         elif cmd == "FORWARD":
-            d_mm = float(val) * self.fwd_gain
+            d_mm = (float(val) / FORWARD_CMD_SCALE) * self.fwd_gain
             d_px = d_mm * self.px_per_mm
             hr = math.radians(self.heading)
             self.x += d_px * math.cos(hr)
@@ -263,8 +278,16 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
     """
     idx = 0
     misses = 0
+    just_turned = False   # don't turn twice in a row (anti-oscillation)
+    steps = 0
+    max_steps = 40 * len(waypoints) + 60   # guard against a non-converging loop
 
     while idx < len(waypoints):
+        steps += 1
+        if steps > max_steps:
+            print("Exceeded {} steps without finishing — aborting (not converging).".format(max_steps))
+            link.send_and_wait("STOP")
+            return False
         pose = get_pose()
         if pose is None:
             misses += 1
@@ -296,12 +319,18 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         bearing = math.degrees(math.atan2(dy, dx))
         err = (bearing - heading + 180.0) % 360.0 - 180.0
 
-        if abs(err) > TURN_TOL_DEG:
+        # Turn only when meaningfully off-heading, AND not immediately after
+        # another turn unless we're still badly off (> TURN_COMMIT_DEG). Forcing
+        # a forward step between turns breaks the overshoot limit-cycle.
+        turn_now = (abs(err) > TURN_TOL_DEG
+                    and not (just_turned and abs(err) <= TURN_COMMIT_DEG))
+        if turn_now:
             cmd = "TURN:{}".format(int(round(err)))
+            just_turned = True
         else:
-            step_mm = min(MAX_STEP_MM, dist / px_per_mm)
-            step_mm = max(MIN_STEP_MM, int(round(step_mm)))
-            cmd = "FORWARD:{}".format(step_mm)
+            step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
+            cmd = "FORWARD:{}".format(int(round(step_mm * FORWARD_CMD_SCALE)))
+            just_turned = False
 
         if on_step:
             on_step(pose, waypoints[idx], idx, cmd)
@@ -562,16 +591,23 @@ def run_sim():
                  (520.0, 120.0), (300.0, 100.0)]
     start_pose = (100.0, 400.0, 0.0)   # facing +x (right), but first leg goes up-right
 
+    # turn_overshoot_deg models the EV3 gyro coast that caused the real-robot
+    # limit cycle; a healthy loop must still converge with few turns.
     sim = SimLink(start_pose, px_per_mm,
-                  turn_gain=1.06, fwd_gain=0.95, lateral_noise_mm=4.0, seed=1)
+                  turn_gain=1.0, fwd_gain=0.95, lateral_noise_mm=4.0,
+                  turn_overshoot_deg=8.0, seed=1)
 
-    steps = {"n": 0}
+    steps = {"n": 0, "turns": 0, "fwd": 0}
 
     def get_pose():
         return sim.pose()
 
     def on_step(pose, target, idx, cmd):
         steps["n"] += 1
+        if cmd.startswith("TURN"):
+            steps["turns"] += 1
+        elif cmd.startswith("FORWARD"):
+            steps["fwd"] += 1
 
     ok = follow_path(get_pose, sim, list(waypoints), px_per_mm,
                      face_deg=180.0, on_step=on_step)
@@ -579,8 +615,8 @@ def run_sim():
     fx, fy, fh = sim.pose()
     goal = waypoints[-1]
     err_px = math.hypot(fx - goal[0], fy - goal[1])
-    print("sim: completed={} steps={} final=({:.1f},{:.1f},{:.0f}deg)".format(
-        ok, steps["n"], fx, fy, fh))
+    print("sim: completed={} steps={} (turns={} fwd={}) final=({:.1f},{:.1f},{:.0f}deg)".format(
+        ok, steps["n"], steps["turns"], steps["fwd"], fx, fy, fh))
     print("sim: distance from final waypoint = {:.1f}px "
           "(arrive tol {:.0f}px) -> {}".format(
               err_px, ARRIVE_PX, "PASS" if err_px < ARRIVE_PX + 5 else "FAIL"))
