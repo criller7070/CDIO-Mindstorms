@@ -45,12 +45,17 @@ from vision_detector import BallDetector
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX      = 35.0   # waypoint counts as reached within this many pixels.
+ARRIVE_PX      = 12.0   # waypoint counts as reached within this many pixels.
                         # Must exceed one forward step, or the robot steps PAST a
                         # waypoint without registering arrival and spins to go back.
-TURN_TOL_DEG   = 12.0   # rotate only for heading errors larger than this. Must
+                        # MAX_STEP_MM * px_per_mm ≈ 7px — so 12px is the safe floor.
+                        # Ball waypoints are trimmed back ~66px (half robot length)
+                        # so the nose stops at ball ± 12px = ± ~34mm.
+TURN_TOL_DEG   = 8.0    # rotate only for heading errors larger than this. Must
                         # exceed the EV3 gyro turn's coast/overshoot, or the loop
                         # limit-cycles (turn past target, correct back, repeat).
+                        # TURN_COAST_DEG=3° so an 8° threshold leaves 5° of cmd
+                        # headroom — small overshoots won't re-trigger a correction.
 TURN_COMMIT_DEG = 45.0  # after a turn, drive a forward step before turning again
                         # unless the heading error still exceeds this. Prevents
                         # turn-turn-turn oscillation from small overshoots.
@@ -64,7 +69,7 @@ TURN_SLOPE     = 1.0
 TURN_COAST_DEG = 3.0
 MAX_STEP_MM    = 20     # never drive more than this (physical mm) between observations
                         # CRITICAL: must satisfy MAX_STEP_MM * px_per_mm < ARRIVE_PX
-                        # or the robot overshoots waypoints and spins back (oscillation)
+                        # 20mm * 0.358px/mm ≈ 7px << ARRIVE_PX=20px — safe.
 MIN_STEP_MM    = 10     # smallest forward nudge worth sending
 # robot/main.py executes FORWARD:v as straight(-v / 3.2288), i.e. the command
 # value is ~3.2x the physical mm travelled. Scale the command so a requested
@@ -76,15 +81,22 @@ REPLAN_PX      = 150.0  # re-plan when robot is >150px off its target. Lower tha
                         # divergence. Per-step heading correction handles smaller errors.
 REPLAN_EVERY_N = 8      # also force a replan after every N forward steps so ball
                         # positions are refreshed even when drift is under REPLAN_PX.
-DENSIFY_GAP_PX = 30.0   # maximum pixel gap between consecutive waypoints after
+DENSIFY_GAP_PX = 20.0   # maximum pixel gap between consecutive waypoints after
                         # densification.  Intermediate points are inserted along each
-                        # segment so the heading correction fires every ~11 mm of
+                        # segment so the heading correction fires every ~56mm of
                         # travel, preventing lateral drift from accumulating over a
-                        # long single step.
+                        # long single step.  Tighter than original 30px to give more
+                        # heading corrections on the final approach to each ball.
 GATE_OPEN_DEG  = 90    # motor angle sent with GATE_OPEN (open to collect a ball)
 GATE_CLOSE_DEG = 90    # motor angle sent with GATE_CLOSE (close to retain a ball)
-BALL_GATE_THRESHOLD_PX = 40  # waypoint is treated as a ball pickup point when
-                              # it is within this many pixels of a detected ball
+BALL_GATE_THRESHOLD_PX = 80  # waypoint is treated as a ball pickup point when
+                              # it is within this many pixels of a detected ball.
+                              # Must exceed the half-length trim (~66px at 0.358px/mm)
+                              # or _near_ball() returns False for trimmed ball waypoints
+                              # and the gate never fires.
+# Extra pixels added to the camera-detected X radius before passing it to A*.
+# The X arms are thin so minEnclosingCircle underestimates the physical obstacle.
+CENTER_OBSTACLE_EXTRA_PX = 40
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -238,7 +250,7 @@ def plan_waypoints(detector, frame, robot_pos):
     x_min, y_min, x_max, y_max = analysis['field_bounds']
     center_pos    = analysis['center_pos']
     wall_margin   = analysis['wall_margin'] or WALL_MARGIN
-    center_radius = analysis.get('center_radius') or CENTER_RADIUS
+    center_radius = (analysis.get('center_radius') or CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
 
     if analysis['field_detected']:
         raw_dropoff = (x_min, (y_min + y_max) // 2)
