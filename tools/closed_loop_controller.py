@@ -663,15 +663,26 @@ def run_live(camera_index, link):
         print("Never saw the robot marker — aborting.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
-    # Warm up the ball tracker: feed several frames so balls accumulate enough
-    # consecutive hits to pass ball_confirm_frames. Without this, planning on a
-    # single frame always returns 0 balls (need 7 hits but only 1 frame given).
+    # Warm up ball detection before planning.
+    # With Roboflow backend the worker thread enforces YOLO_CALL_INTERVAL (1 s)
+    # before its first API call, so we must wait for the cache to populate.
+    # With HoughCircles we just need enough frames to pass ball_confirm_frames.
     detector.ball_confirm_frames = 1  # single-frame is fine for planning
-    for _ in range(5):
+    yolo_mode = getattr(detector, '_roboflow_client', None) is not None
+    wait_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.0
+    print("Warming up ball detector ({})...".format(
+        "YOLO — waiting {:.0f}s for first API result".format(wait_s)
+        if yolo_mode else "HoughCircles"))
+    deadline = time.monotonic() + max(wait_s, 0.5)
+    while time.monotonic() < deadline or (yolo_mode and not detector._yolo_cached_result):
         f = source.grab()
         if f is not None:
             detector.analyze_course(f)
+        if source.aborted:
+            source.stop(); cap.release(); cv2.destroyAllWindows(); return
         time.sleep(0.05)
+        if yolo_mode and detector._yolo_cached_result and time.monotonic() > deadline:
+            break
 
     frame = source.grab()
     robot_pos = (robot_pose[0], robot_pose[1])
