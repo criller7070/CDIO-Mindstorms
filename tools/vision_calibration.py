@@ -4,13 +4,16 @@ Live HSV calibration tool.
 Call run_calibration(cap, color_ranges) to open the trackbar UI.
 Modifies color_ranges in-place so the detector sees changes immediately.
 
-Controls panel is tkinter (avoids OpenCV/GTK label rendering bugs on Linux).
+Controls panel is customtkinter (modern look on Linux + Windows).
 Camera preview still uses cv2.imshow.
 """
 import cv2
 import numpy as np
-import tkinter as tk
+import customtkinter as ctk
 from vision_config import save_color_ranges
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
 COLORS = ['WHITE', 'ORANGE', 'RED']
 TINTS  = {'WHITE': (255, 255, 255), 'ORANGE': (0, 140, 255), 'RED': (0, 0, 255)}
@@ -18,9 +21,10 @@ TINTS  = {'WHITE': (255, 255, 255), 'ORANGE': (0, 140, 255), 'RED': (0, 0, 255)}
 CAL_WIN  = 'HSV Calibration'
 MASK_WIN = 'Calibration Mask'
 
+COLOR_FG = {'WHITE': '#cccccc', 'ORANGE': '#ff8c00', 'RED': '#ff4444'}
+
 
 def _positions_for(color, color_ranges):
-    """Return (h_min, h_max, s_min, s_max, v_min, v_max) from saved ranges."""
     cr = color_ranges[color]
     if color == 'RED':
         return (
@@ -52,26 +56,27 @@ def _save(color, color_ranges, h_min, h_max, s_min, s_max, v_min, v_max):
 
 def run_calibration(cap, color_ranges):
     """
-    Open a tkinter slider panel + OpenCV preview windows to tune HSV ranges live.
+    Open a customtkinter slider panel + OpenCV preview windows to tune HSV ranges live.
 
     Controls:
       N / Next Color button  – cycle WHITE → ORANGE → RED
       S / Save button        – save to color_ranges.json
       Q / Quit button        – exit calibration
     """
-    color_idx = [0]
-    running   = [True]
+    color_idx  = [0]
+    running    = [True]
+    after_id   = [None]
 
-    root = tk.Tk()
+    root = ctk.CTk()
     root.title("HSV Controls")
     root.resizable(False, False)
-    # Keep the window on top so it doesn't hide behind the camera preview
     root.attributes('-topmost', True)
 
     # ── Color indicator ────────────────────────────────────────────────────────
-    color_label = tk.Label(root, text=COLORS[0], font=('Arial', 15, 'bold'),
-                           fg='#2266cc', pady=6)
-    color_label.pack()
+    color_label = ctk.CTkLabel(root, text=COLORS[0],
+                               font=ctk.CTkFont(size=18, weight='bold'),
+                               text_color=COLOR_FG[COLORS[0]])
+    color_label.pack(pady=(14, 6))
 
     # ── Sliders ────────────────────────────────────────────────────────────────
     slider_defs = [
@@ -79,45 +84,62 @@ def run_calibration(cap, color_ranges):
         ('S min', 255), ('S max', 255),
         ('V min', 255), ('V max', 255),
     ]
-    sliders = {}
+    sliders     = {}   # name → CTkSlider
+    value_vars  = {}   # name → IntVar (for live readout)
+
+    slider_frame = ctk.CTkFrame(root)
+    slider_frame.pack(fill='x', padx=16, pady=4)
+
     for name, max_val in slider_defs:
-        row = tk.Frame(root)
-        row.pack(fill='x', padx=14, pady=2)
-        tk.Label(row, text=name, width=7, anchor='w',
-                 font=('Arial', 10)).pack(side='left')
-        var = tk.IntVar()
-        sliders[name] = var
-        sc = tk.Scale(row, variable=var, from_=0, to=max_val,
-                      orient='horizontal', length=300, showvalue=True,
-                      font=('Arial', 9))
-        sc.pack(side='left', fill='x', expand=True)
+        row = ctk.CTkFrame(slider_frame, fg_color='transparent')
+        row.pack(fill='x', padx=4, pady=3)
+
+        ctk.CTkLabel(row, text=name, width=52, anchor='w',
+                     font=ctk.CTkFont(size=12)).pack(side='left')
+
+        val_label = ctk.CTkLabel(row, text='0', width=34,
+                                 font=ctk.CTkFont(size=12))
+        val_label.pack(side='right')
+
+        slider = ctk.CTkSlider(row, from_=0, to=max_val, width=280,
+                               number_of_steps=max_val)
+        slider.pack(side='left', fill='x', expand=True, padx=(4, 4))
+
+        # keep the readout in sync
+        def _on_change(v, lbl=val_label):
+            lbl.configure(text=str(int(v)))
+        slider.configure(command=_on_change)
+
+        sliders[name] = slider
 
     # ── Red-channel hint ───────────────────────────────────────────────────────
-    hint_var = tk.StringVar()
-    tk.Label(root, textvariable=hint_var, font=('Arial', 8), fg='gray').pack(pady=(0, 4))
+    hint_label = ctk.CTkLabel(root, text='', font=ctk.CTkFont(size=10),
+                              text_color='gray')
+    hint_label.pack(pady=(2, 4))
 
     # ── Buttons ────────────────────────────────────────────────────────────────
-    btn_frame = tk.Frame(root)
-    btn_frame.pack(pady=8)
+    btn_frame = ctk.CTkFrame(root, fg_color='transparent')
+    btn_frame.pack(pady=10)
 
     def _get_values():
-        return (sliders['H min'].get(), sliders['H max'].get(),
-                sliders['S min'].get(), sliders['S max'].get(),
-                sliders['V min'].get(), sliders['V max'].get())
+        return tuple(int(sliders[n].get()) for n, _ in slider_defs)
 
     def _load_sliders(color):
         vals = _positions_for(color, color_ranges)
         for (name, _), v in zip(slider_defs, vals):
             sliders[name].set(v)
-        hint_var.set("H min = top of low band   H max = bottom of high band"
-                     if color == 'RED' else "")
+            # manually fire the readout update
+            sliders[name]._command(v)  # noqa: SLF001
+        hint_label.configure(
+            text="H min = top of low band   H max = bottom of high band"
+            if color == 'RED' else "")
 
     def do_next():
         color = COLORS[color_idx[0]]
         _save(color, color_ranges, *_get_values())
         color_idx[0] = (color_idx[0] + 1) % len(COLORS)
         color = COLORS[color_idx[0]]
-        color_label.config(text=color)
+        color_label.configure(text=color, text_color=COLOR_FG[color])
         _load_sliders(color)
         print("Switched to:", color)
 
@@ -126,21 +148,25 @@ def run_calibration(cap, color_ranges):
 
     def do_quit():
         running[0] = False
-        root.quit()
+        if after_id[0] is not None:
+            root.after_cancel(after_id[0])
+        root.destroy()
 
-    tk.Button(btn_frame, text="Next Color  (N)", command=do_next,
-              width=16).pack(side='left', padx=5)
-    tk.Button(btn_frame, text="Save  (S)", command=do_save,
-              width=10).pack(side='left', padx=5)
-    tk.Button(btn_frame, text="Quit  (Q)", command=do_quit,
-              width=10).pack(side='left', padx=5)
+    ctk.CTkButton(btn_frame, text="Next Color  (N)", command=do_next,
+                  width=140).pack(side='left', padx=6)
+    ctk.CTkButton(btn_frame, text="Save  (S)", command=do_save,
+                  width=90).pack(side='left', padx=6)
+    ctk.CTkButton(btn_frame, text="Quit  (Q)", command=do_quit,
+                  width=90, fg_color='#6b2020', hover_color='#8b3030').pack(side='left', padx=6)
 
-    # Bind keys on the root window (works even when a slider has focus)
-    for key in ('<n>', '<N>'): root.bind(key, lambda e: do_next())
-    for key in ('<s>', '<S>'): root.bind(key, lambda e: do_save())
-    for key in ('<q>', '<Q>'): root.bind(key, lambda e: do_quit())
+    root.bind('<n>', lambda e: do_next())
+    root.bind('<N>', lambda e: do_next())
+    root.bind('<s>', lambda e: do_save())
+    root.bind('<S>', lambda e: do_save())
+    root.bind('<q>', lambda e: do_quit())
+    root.bind('<Q>', lambda e: do_quit())
 
-    # ── Camera loop via tkinter after() ───────────────────────────────────────
+    # ── Camera loop via after() ────────────────────────────────────────────────
     _load_sliders(COLORS[0])
     print("\n--- HSV Calibration ---")
     print("  N or button : cycle WHITE / ORANGE / RED  (auto-saves current)")
@@ -152,7 +178,7 @@ def run_calibration(cap, color_ranges):
             return
         ret, frame = cap.read()
         if not ret:
-            root.after(30, camera_tick)
+            after_id[0] = root.after(30, camera_tick)
             return
 
         frame = cv2.flip(frame, 1)
@@ -178,8 +204,7 @@ def run_calibration(cap, color_ranges):
         display = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
 
         fh = display.shape[0]
-        cv2.putText(display,
-                    "CALIBRATE: {}".format(color),
+        cv2.putText(display, "CALIBRATE: {}".format(color),
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         cv2.putText(display,
                     "{}  S:{}-{}  V:{}-{}".format(h_label, s_min, s_max, v_min, v_max),
@@ -191,11 +216,11 @@ def run_calibration(cap, color_ranges):
 
         cv2.imshow(CAL_WIN, display)
         cv2.imshow(MASK_WIN, mask)
-        cv2.waitKey(1)   # pump OpenCV's event queue so imshow renders
+        cv2.waitKey(1)
 
-        root.after(30, camera_tick)
+        after_id[0] = root.after(30, camera_tick)
 
-    root.after(30, camera_tick)
+    after_id[0] = root.after(30, camera_tick)
     root.mainloop()
 
     cv2.destroyWindow(CAL_WIN)
