@@ -1,16 +1,26 @@
 # Contributing & Project Structure
 
-## 
+## Quick Start (open-loop mission)
 ```
 ssh robot@10.56.138.36
 cd ~/CDIO-Mindstorms/robot/
 brickrun -r -- pybricks-micropython main.py
 ```
 
-
 ## TODO
-- Pick up balls
-- 
+- Streamline different processes for
+    - 1) pickup: gate/lift motor sequencing, ball scooping angle and timing
+    - 2) nav: closed-loop follow loop — step sizing, turn compensation, arrival tolerance
+    - 3) planning: A* routing, TSP ball ordering, multi-trip clustering
+    - 4) detection: ball/field/robot pose detection (vision_detector.py)
+    - 5) calibration (colors): HSV ranges for WHITE/ORANGE/RED (color_ranges.json)
+    - 6) calibration (movement): physical constants — FORWARD_CMD_SCALE, TURN_SLOPE, TURN_COAST_DEG
+    - 7) EV3 firmware: command dispatcher, follow loop, gyro turns (robot/main.py)
+    - 8) transport: TCP/Bluetooth bridge, file handshake, link classes (ev3_server.py)
+    - 9) vision app / UI: live overlays, planning trigger, screenshots (vision_app.py)
+    - 10) deployment / tooling: deploy scripts, ArUco generator, mission variants
+- Make Bluetooth sender and deploy scripts Linux-compatible (tools_mission_sender.py uses Windows-only AF_BTH; deploy_robot_only.ps1 is PowerShell — vision UI already works on Linux with QT_QPA_PLATFORM=xcb)
+
 
 ## File Tree
 
