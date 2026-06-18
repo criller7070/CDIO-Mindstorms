@@ -10,7 +10,7 @@ Goal: make `tools/` reflect the domain split in CONTRIBUTING.md so it's obvious 
 
 | File | Lines | What's actually inside |
 |---|---|---|
-| `closed_loop_controller.py` | ~820 | **God file.** BluetoothLink + TCPLink + SimLink (transport) · CameraPoseSource (camera) · follow_path + _turn_command + tunables (nav) · plan_waypoints + _densify_waypoints + _flatten_segs (planning glue) · gate state machine / on_arrive (pickup) · run_probe/run_live/run_sim entry points |
+| `closed_loop_controller.py` | ~820 | **God file.** BluetoothLink + TCPLink + SimLink (transport) · CameraPoseSource (camera) · follow_path + _turn_command + tunables (nav) · plan_waypoints + _densify_waypoints + _flatten_segs (planning glue) · gate state machine / on_arrive (pickup) · dropoff release at last waypoint · run_probe/run_live/run_sim entry points |
 | `tools_path_planner.py` | ~740 | Path planning only — clean, well-scoped |
 | `vision_detector.py` | ~424 | Detection only — clean |
 | `vision_app.py` | ~491 | UI / planning app — clean |
@@ -58,6 +58,12 @@ Four unrelated domains in one 820-line file. Adding anything to nav, gate, or tr
 ### 4. `nav_controller.py` is at the repo root
 Should be in `tools/` or deleted if fully superseded by `closed_loop_controller.py`.
 
+### 5. Dropoff logic is buried inside `on_arrive` in the god file
+The ball release at the dropoff zone is a distinct behaviour (domain 11) but shares a function with pickup gate logic, making it hard to tune independently.
+
+### 6. No start/stop robot scripts exist (domains 12 & 13)
+Starting the robot currently means copy-pasting SSH commands from CLOSED_LOOP_HANDOFF.md. Stopping it requires knowing `fuser -k 9999/tcp`. Neither is cross-platform. Both should be a single runnable script.
+
 ---
 
 ## Proposed split
@@ -72,7 +78,7 @@ tools/
 ├── nav_links.py          ← NEW: BluetoothLink, TCPLink, SimLink
 ├── nav_camera.py         ← NEW: CameraPoseSource (background grab thread)
 ├── nav_core.py           ← NEW: follow_path(), _turn_command(), all tunables
-├── nav_gate.py           ← NEW: gate state machine, on_arrive logic, _near_ball
+├── nav_gate.py           ← NEW: gate state machine, on_arrive logic, _near_ball, dropoff release
 ├── nav_planner.py        ← NEW: plan_waypoints(), _flatten_segs(), _densify_waypoints()
 ├── closed_loop.py        ← RENAME from closed_loop_controller.py — entry points only
 │                              (run_probe, run_plan_only, run_live, run_sim, main)
@@ -91,7 +97,10 @@ tools/
 ├── generate_aruco_marker.py (unchanged)
 ├── deploy_robot_only.ps1 (unchanged — or move to scripts/)
 │
-└── tools_mission_sender.py  (keep for now — Bluetooth open-loop path)
+├── tools_mission_sender.py  (keep for now — Bluetooth open-loop path)
+│
+├── robot_start.py        ← NEW: SSH into EV3, launch ev3_server + main.py --follow (cross-platform)
+└── robot_stop.py         ← NEW: SSH into EV3, kill ev3_server + main.py cleanly (cross-platform)
 ```
 
 **Delete:**
@@ -119,7 +128,13 @@ tools/
    - What remains in `closed_loop_controller.py` is just entry points → rename to `closed_loop.py`
    - Run `python3 -u closed_loop.py --sim` after each step to confirm nothing broke
 
-3. **Rename `tools_path_planner.py` → `path_planner.py`**
+3. **Create `robot_start.py` and `robot_stop.py`**
+   - Use Python's `subprocess` + `ssh` (or `paramiko`) so they work on both Windows and Linux
+   - `robot_start.py`: SSH → kill any stale processes → start `ev3_server.py --tcp` → start `main.py --follow` → tail log until `Follow loop ready`
+   - `robot_stop.py`: SSH → `fuser -k 9999/tcp` → wait for processes to exit
+   - Replace the manual SSH steps in CLOSED_LOOP_HANDOFF.md with a single `python3 tools/robot_start.py`
+
+4. **Rename `tools_path_planner.py` → `path_planner.py`**
    - Update imports in `vision_app.py`, `closed_loop.py` (or `nav_planner.py` after step 2)
    - Update any references in CONTRIBUTING.md / README
 
@@ -133,3 +148,6 @@ tools/
 | Add new transport (USB serial?) → edit god file | Add new transport → add class to nav_links.py |
 | Tune nav constants → scroll through mixed code | Tune nav constants → top of nav_core.py |
 | "Where do I add ball detection?" → unclear | "Where do I add ball detection?" → vision_detector.py |
+| Start robot → copy SSH commands from handoff doc | Start robot → `python3 tools/robot_start.py` |
+| Stop robot → remember `fuser -k 9999/tcp` | Stop robot → `python3 tools/robot_stop.py` |
+| Tune dropoff → find it inside gate/pickup function | Tune dropoff → nav_gate.py, clearly labelled |

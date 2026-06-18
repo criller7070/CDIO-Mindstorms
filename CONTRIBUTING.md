@@ -19,6 +19,9 @@ brickrun -r -- pybricks-micropython main.py
     - 8) transport: TCP/Bluetooth bridge, file handshake, link classes (ev3_server.py)
     - 9) vision app / UI: live overlays, planning trigger, screenshots (vision_app.py)
     - 10) deployment / tooling: deploy scripts, ArUco generator, mission variants
+    - 11) dropoff
+    - 12) start robot (open ports and sockets). Windows and Linux compatble
+    - 13) stop robot (stop ports and sockets). Windows and Linux compatible
 - Make Bluetooth sender and deploy scripts Linux-compatible (tools_mission_sender.py uses Windows-only AF_BTH; deploy_robot_only.ps1 is PowerShell — vision UI already works on Linux with QT_QPA_PLATFORM=xcb)
 
 
