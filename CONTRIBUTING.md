@@ -1,5 +1,17 @@
 # Contributing & Project Structure
 
+## 
+```
+ssh robot@10.56.138.36
+cd ~/CDIO-Mindstorms/robot/
+brickrun -r -- pybricks-micropython main.py
+```
+
+
+## TODO
+- Pick up balls
+- 
+
 ## File Tree
 
 ```
