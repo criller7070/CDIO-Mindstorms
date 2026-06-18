@@ -12,7 +12,7 @@ brickrun -r -- pybricks-micropython main.py
     - 1) pickup: gate/lift motor sequencing, ball scooping angle and timing
     - 2) nav: closed-loop follow loop — step sizing, turn compensation, arrival tolerance
     - 3) planning: A* routing, TSP ball ordering, multi-trip clustering
-    - 4) detection: ball/field/robot pose detection (vision_detector.py)
+    - 4) detection: ball/field/robot pose detection (vision_detector.py) 
     - 5) calibration (colors): HSV ranges for WHITE/ORANGE/RED (color_ranges.json)
     - 6) calibration (movement): physical constants — FORWARD_CMD_SCALE, TURN_SLOPE, TURN_COAST_DEG
     - 7) EV3 firmware: command dispatcher, follow loop, gyro turns (robot/main.py)

@@ -38,6 +38,7 @@ from vision_config import (
     CAMERA_INDEX, WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
+    ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
     load_color_ranges,
 )
 from vision_detector import BallDetector
@@ -525,6 +526,10 @@ def _open_camera(index):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
+    # Fixed exposure prevents brightness cycling that drops balls below the
+    # HSV threshold on dark frames, causing intermittent missed detections.
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 = manual in MSMF
+    cap.set(cv2.CAP_PROP_EXPOSURE, -5)
     # Keep only the newest frame so reads after a blocking move aren't stale
     # (stale/lagging frames were causing intermittent "lost marker" aborts).
     try:
@@ -536,7 +541,10 @@ def _open_camera(index):
 
 def run_probe(camera_index):
     """Print (and show) the live ArUco pose. No Bluetooth — just verify tracking."""
-    detector = BallDetector(load_color_ranges())
+    detector = BallDetector(load_color_ranges(),
+                            roboflow_api_key=ROBOFLOW_API_KEY,
+                            roboflow_model_id=ROBOFLOW_MODEL_ID,
+                            roboflow_api_url=ROBOFLOW_API_URL)
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
@@ -572,7 +580,10 @@ def run_probe(camera_index):
 
 def run_plan_only(camera_index):
     """Grab one frame, plan from the detected robot pose, and show the path."""
-    detector = BallDetector(load_color_ranges())
+    detector = BallDetector(load_color_ranges(),
+                            roboflow_api_key=ROBOFLOW_API_KEY,
+                            roboflow_model_id=ROBOFLOW_MODEL_ID,
+                            roboflow_api_url=ROBOFLOW_API_URL)
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
@@ -615,7 +626,10 @@ def run_live(camera_index, link):
     `link` is a connected-capable link object (BluetoothLink or TCPLink) whose
     .connect()/.send_and_wait()/.close() drive the robot.
     """
-    detector = BallDetector(load_color_ranges())
+    detector = BallDetector(load_color_ranges(),
+                            roboflow_api_key=ROBOFLOW_API_KEY,
+                            roboflow_model_id=ROBOFLOW_MODEL_ID,
+                            roboflow_api_url=ROBOFLOW_API_URL)
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
