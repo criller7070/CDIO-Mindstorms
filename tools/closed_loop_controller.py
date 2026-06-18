@@ -600,11 +600,23 @@ def run_plan_only(camera_index):
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
         return
+    # Warm up YOLO: the background thread won't make its first API call until
+    # YOLO_CALL_INTERVAL seconds have elapsed, so grab frames for that long.
+    # ball_confirm_frames=1 so a single YOLO response is enough to confirm a ball.
+    detector.ball_confirm_frames = 1
+    yolo_mode = getattr(detector, '_roboflow_client', None) is not None
+    warmup_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.3
+    print("Warming up detector ({:.0f}s)...".format(warmup_s))
+    deadline = time.monotonic() + warmup_s
     frame = None
-    for _ in range(10):
+    while time.monotonic() < deadline or (yolo_mode and not detector._yolo_cached_result):
         ret, f = cap.read()
         if ret:
             frame = cv2.flip(f, 1)
+            detector.analyze_course(frame)
+        if yolo_mode and detector._yolo_cached_result and time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
     cap.release()
     if frame is None:
         print("ERROR: no frame captured.")
