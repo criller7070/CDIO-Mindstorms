@@ -26,8 +26,8 @@ from config import (
     load_color_ranges,
 )
 from detection import BallDetector
-from tools.vision_calibration import run_calibration
-from tools.vision_auto_calibrate import run_auto_calibration
+from calibration import run_calibration
+from calibration_auto import run_auto_calibration
 
 
 class VisionApp:

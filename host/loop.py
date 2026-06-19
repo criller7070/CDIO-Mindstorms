@@ -41,9 +41,10 @@ from config import (
     load_color_ranges,
     ARRIVE_PX, MAX_STEP_MM, FORWARD_CMD_SCALE, DENSIFY_GAP_PX,
     BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG,
+    ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
 )
 from detection import BallDetector
-from link import BluetoothLink, TCPLink
+from link import BluetoothLink, TCPLink, SimLink
 from nav import follow_path
 
 
@@ -273,16 +274,31 @@ def run_probe(camera_index):
 
 def run_plan_only(camera_index):
     """Grab one frame, plan from the detected robot pose, and show the path."""
-    detector = BallDetector(load_color_ranges())
+    detector = BallDetector(load_color_ranges(),
+                            roboflow_api_key=ROBOFLOW_API_KEY,
+                            roboflow_model_id=ROBOFLOW_MODEL_ID,
+                            roboflow_api_url=ROBOFLOW_API_URL)
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
         return
+    # Warm up YOLO: the background thread won't make its first API call until
+    # YOLO_CALL_INTERVAL seconds have elapsed, so grab frames for that long.
+    # ball_confirm_frames=1 so a single YOLO response is enough to confirm a ball.
+    detector.ball_confirm_frames = 1
+    yolo_mode = getattr(detector, '_roboflow_client', None) is not None
+    warmup_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.3
+    print("Warming up detector ({:.0f}s)...".format(warmup_s))
+    deadline = time.monotonic() + warmup_s
     frame = None
-    for _ in range(10):
+    while time.monotonic() < deadline or (yolo_mode and not detector._yolo_cached_result):
         ret, f = cap.read()
         if ret:
             frame = cv2.flip(f, 1)
+            detector.analyze_course(frame)
+        if yolo_mode and detector._yolo_cached_result and time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
     cap.release()
     if frame is None:
         print("ERROR: no frame captured.")
@@ -311,8 +327,11 @@ def run_plan_only(camera_index):
 
 
 def run_live(camera_index, link):
-    """The real thing: camera + TCP closed-loop run."""
-    detector = BallDetector(load_color_ranges())
+    """The real thing: camera + (Bluetooth or TCP) closed-loop run."""
+    detector = BallDetector(load_color_ranges(),
+                            roboflow_api_key=ROBOFLOW_API_KEY,
+                            roboflow_model_id=ROBOFLOW_MODEL_ID,
+                            roboflow_api_url=ROBOFLOW_API_URL)
     cap = _open_camera(camera_index)
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
@@ -333,13 +352,26 @@ def run_live(camera_index, link):
         print("Never saw the robot marker — aborting.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
-    # Warm up the ball tracker so balls accumulate enough consecutive hits.
+    # Warm up ball detection before planning.
+    # With Roboflow backend the worker thread enforces YOLO_CALL_INTERVAL (1 s)
+    # before its first API call, so we must wait for the cache to populate.
+    # With HoughCircles we just need enough frames to pass ball_confirm_frames.
     detector.ball_confirm_frames = 1
-    for _ in range(5):
+    yolo_mode = getattr(detector, '_roboflow_client', None) is not None
+    wait_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.0
+    print("Warming up ball detector ({})...".format(
+        "YOLO — waiting {:.0f}s for first API result".format(wait_s)
+        if yolo_mode else "HoughCircles"))
+    deadline = time.monotonic() + max(wait_s, 0.5)
+    while time.monotonic() < deadline or (yolo_mode and not detector._yolo_cached_result):
         f = source.grab()
         if f is not None:
             detector.analyze_course(f)
+        if source.aborted:
+            source.stop(); cap.release(); cv2.destroyAllWindows(); return
         time.sleep(0.05)
+        if yolo_mode and detector._yolo_cached_result and time.monotonic() > deadline:
+            break
 
     frame = source.grab()
     robot_pos = (robot_pose[0], robot_pose[1])
@@ -435,13 +467,52 @@ def run_live(camera_index, link):
         cv2.destroyAllWindows()
 
 
+def run_sim():
+    """Validate the control loop with no hardware: a simulated robot + drift."""
+    px_per_mm = 0.35
+    waypoints = [(100.0, 400.0), (250.0, 250.0), (450.0, 300.0),
+                 (520.0, 120.0), (300.0, 100.0)]
+
+    sim = SimLink((100.0, 400.0, 0.0), px_per_mm,
+                  turn_gain=1.12, fwd_gain=0.95, lateral_noise_mm=4.0,
+                  turn_overshoot_deg=10.0, seed=1)
+
+    steps = {"n": 0, "turns": 0, "fwd": 0}
+
+    def get_pose():
+        return sim.pose()
+
+    def on_step(pose, target, idx, cmd, total_wps):
+        steps["n"] += 1
+        if cmd.startswith("TURN"):
+            steps["turns"] += 1
+        elif cmd.startswith("FORWARD"):
+            steps["fwd"] += 1
+
+    ok = follow_path(get_pose, sim, list(waypoints), px_per_mm,
+                     face_deg=180.0, on_step=on_step)
+
+    fx, fy, fh = sim.pose()
+    goal = waypoints[-1]
+    err_px = math.hypot(fx - goal[0], fy - goal[1])
+    print("sim: completed={} steps={} (turns={} fwd={}) final=({:.1f},{:.1f},{:.0f}deg)".format(
+        ok, steps["n"], steps["turns"], steps["fwd"], fx, fy, fh))
+    print("sim: distance from final waypoint = {:.1f}px "
+          "(arrive tol {:.0f}px) -> {}".format(
+              err_px, ARRIVE_PX, "PASS" if err_px < ARRIVE_PX + 5 else "FAIL"))
+    print("sim: facing error vs hole(180) = {:.1f} deg".format(
+        (180.0 - fh + 180.0) % 360.0 - 180.0))
+
+
 def main():
     args = sys.argv[1:]
     camera_index = CAMERA_INDEX
     if "--camera" in args:
         camera_index = int(args[args.index("--camera") + 1])
 
-    if "--probe" in args:
+    if "--sim" in args:
+        run_sim()
+    elif "--probe" in args:
         run_probe(camera_index)
     elif "--plan-only" in args:
         run_plan_only(camera_index)

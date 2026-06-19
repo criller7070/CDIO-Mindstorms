@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fully automatic HSV calibration — no clicking required.
+Fully automatic HSV calibration — library module.
 
 Algorithm:
   1. RED walls detected with existing range → field boundary established.
@@ -17,14 +17,13 @@ Press ESC during countdown to abort without saving.
 """
 import cv2
 import numpy as np
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from host.config import save_color_ranges
+
+from config import save_color_ranges
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 WHITE_SEED = {'lo': [0, 0, 180], 'hi': [179, 55, 255]}  # wider after CLAHE
 
-# CLAHE normalises V locally — must match the detector (vision_detector._to_hsv).
+# CLAHE normalises V locally — must match the detector (detection._to_hsv).
 _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 BALL_MIN_CIRC       = 0.55
@@ -239,7 +238,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
 
     hit_maps     = {c: np.zeros((fh, fw), np.float32) for c in ('RED', 'ORANGE', 'WHITE')}
     hsv_pools    = {c: [] for c in ('RED', 'ORANGE', 'WHITE')}
-    sampled_hsvs = []   # one HSV image every SAMPLE_EVERY frames
+    sampled_hsvs = []
     SAMPLE_EVERY = 20   # 50 samples across 1000 frames ≈ 45 MB
 
     for i in range(CAPTURE_FRAMES):
@@ -275,7 +274,6 @@ def run_auto_calibration(cap, color_ranges, headless=False):
             print("  {} : nothing detected — keeping existing range".format(color_name))
             continue
 
-        # Only use pixels from the reliable spatial mask (appeared in enough frames)
         reliable = (hit_maps[color_name] >= threshold_count).astype(np.uint8)
         reliable_pixel_count = int(reliable.sum())
         if reliable_pixel_count < 50:
@@ -283,8 +281,6 @@ def run_auto_calibration(cap, color_ranges, headless=False):
                 color_name, reliable_pixel_count))
             continue
 
-        # Collect pixels from reliable locations across all sampled frames so no
-        # single frame's transient glare or shadow can skew the result.
         if sampled_hsvs:
             px_parts  = [h[reliable > 0] for h in sampled_hsvs]
             stable_px = np.vstack([p for p in px_parts if len(p) > 0])
@@ -298,7 +294,6 @@ def run_auto_calibration(cap, color_ranges, headless=False):
 
         new_range = _compute_range(stable_px, color_name)
 
-        # Sanity: hue centre in expected territory
         if color_name in sanity:
             h_c = (new_range['lower'][0] + new_range['upper'][0]) / 2
             lo, hi = sanity[color_name]
@@ -307,7 +302,6 @@ def run_auto_calibration(cap, color_ranges, headless=False):
                     color_name, h_c))
                 continue
 
-        # RED floor: S/V lower bounds can never drop below existing good values
         if color_name == 'RED':
             ex = color_ranges['RED']
             new_range['lower'][1] = max(new_range['lower'][1], ex['lower'][1])
@@ -353,15 +347,3 @@ def run_auto_calibration(cap, color_ranges, headless=False):
             cv2.waitKey(0)
         cv2.destroyWindow(WIN)
     return confirmed
-
-
-if __name__ == '__main__':
-    import os
-    os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
-    from vision_config import load_color_ranges, CAMERA_INDEX
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cr = load_color_ranges()
-    run_auto_calibration(cap, cr)
-    cap.release()

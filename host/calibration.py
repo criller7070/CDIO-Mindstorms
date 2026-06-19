@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Live HSV calibration tool.
+Live HSV calibration — library module.
 Call run_calibration(cap, color_ranges) to open the trackbar UI.
 Modifies color_ranges in-place so the detector sees changes immediately.
 
@@ -10,9 +10,8 @@ Camera preview still uses cv2.imshow.
 import cv2
 import numpy as np
 import customtkinter as ctk
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from host.config import save_color_ranges
+
+from config import save_color_ranges
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -95,8 +94,8 @@ def run_calibration(cap, color_ranges):
         ('S min', 255), ('S max', 255),
         ('V min', 255), ('V max', 255),
     ]
-    sliders     = {}   # name → CTkSlider
-    value_vars  = {}   # name → IntVar (for live readout)
+    sliders     = {}
+    value_vars  = {}
 
     slider_frame = ctk.CTkFrame(root)
     slider_frame.pack(fill='x', padx=16, pady=4)
@@ -116,7 +115,6 @@ def run_calibration(cap, color_ranges):
                                number_of_steps=max_val)
         slider.pack(side='left', fill='x', expand=True, padx=(4, 4))
 
-        # keep the readout in sync
         def _on_change(v, lbl=val_label):
             lbl.configure(text=str(int(v)))
         slider.configure(command=_on_change)
@@ -139,7 +137,6 @@ def run_calibration(cap, color_ranges):
         vals = _positions_for(color, color_ranges)
         for (name, _), v in zip(slider_defs, vals):
             sliders[name].set(v)
-            # manually fire the readout update
             sliders[name]._command(v)  # noqa: SLF001
         hint_label.configure(
             text="H min = top of low band   H max = bottom of high band"
