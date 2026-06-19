@@ -11,7 +11,7 @@ import time
 from config import (
     ARRIVE_PX, TURN_TOL_DEG, TURN_COMMIT_DEG, TURN_SLOPE, TURN_COAST_DEG,
     MAX_STEP_MM, MIN_STEP_MM, FORWARD_CMD_SCALE, ACTUAL_PX_PER_MM,
-    MAX_POSE_MISS, REPLAN_PX, REPLAN_EVERY_N,
+    MAX_POSE_MISS, REPLAN_PX, REPLAN_EVERY_N, HEADING_LOOKAHEAD_PX,
 )
 
 
@@ -98,20 +98,44 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                 continue
 
         bearing = math.degrees(math.atan2(dy, dx))
-        err = (bearing - heading + 180.0) % 360.0 - 180.0
+        step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / ACTUAL_PX_PER_MM))
+        in_close_approach = dist < 2 * ARRIVE_PX
+
+        # Interpolate the heading target toward the next waypoint's bearing so
+        # heading is reached *during* the approach, not corrected post-arrival.
+        # Crucially, this uses a separate heading_target from the movement bearing
+        # so the TURN pre-aligns heading without redirecting the FORWARD step —
+        # the robot still drives toward the current waypoint, just already facing
+        # where it needs to go when it arrives.
+        # Linear blend: 0% next-bearing at HEADING_LOOKAHEAD_PX, 100% at the
+        # close-approach boundary (2*ARRIVE_PX) where turns are suppressed.
+        # Guard: skip if next bearing is >90° away — don't shortcut corners.
+        heading_target = bearing
+        if (not in_close_approach
+                and dist < HEADING_LOOKAHEAD_PX
+                and idx + 1 < len(waypoints)):
+            nx, ny = waypoints[idx + 1]
+            nxt_bearing = math.degrees(math.atan2(ny - y, nx - x))
+            delta = (nxt_bearing - bearing + 180.0) % 360.0 - 180.0
+            if abs(delta) < 90:
+                t = 1.0 - (dist - 2 * ARRIVE_PX) / (HEADING_LOOKAHEAD_PX - 2 * ARRIVE_PX)
+                t = max(0.0, min(1.0, t))
+                heading_target = bearing + t * delta
+
+        # err drives TURN decisions; move_err drives REVERSE (waypoint behind robot).
+        # Separating them means pre-turning toward the next bearing never triggers
+        # a spurious REVERSE when the current waypoint is still ahead.
+        err = (heading_target - heading + 180.0) % 360.0 - 180.0
+        move_err = (bearing - heading + 180.0) % 360.0 - 180.0
 
         # Turn only when meaningfully off-heading, AND not immediately after
         # another turn unless we're still badly off (> TURN_COMMIT_DEG). Forcing
         # a forward step between turns breaks the overshoot limit-cycle.
-        # When the waypoint is directly behind (|err| > 150°) don't turn 180° —
-        # just reverse. This eliminates U-turn oscillation on small overshoots.
-        # Within 2*ARRIVE_PX of the target, suppress heading correction: turning
+        # When the waypoint is directly behind (|move_err| > 150°) don't turn
+        # 180° — just reverse. This eliminates U-turn oscillation on small
+        # overshoots. Within 2*ARRIVE_PX suppress all heading correction: turning
         # in place drifts the ArUco marker and causes repeated oscillation.
-        # Use actual camera px/mm (measured) for step sizing, not the planner's
-        # value which is ~4x too low and causes every close approach to hit MAX_STEP_MM.
-        step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / ACTUAL_PX_PER_MM))
-        in_close_approach = dist < 2 * ARRIVE_PX
-        if abs(err) > 150 and not in_close_approach:
+        if abs(move_err) > 150 and not in_close_approach:
             cmd = "REVERSE:{}".format(int(round(step_mm)))
             just_turned = False
             fwd_steps += 1

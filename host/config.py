@@ -119,8 +119,12 @@ REPLAN_EVERY_N         = 8      # also force a replan after every N forward step
 DENSIFY_GAP_PX         = 40.0   # maximum pixel gap between consecutive waypoints
                                  # 40px ≈ 29mm. At 40px spacing, 5px positional noise
                                  # causes only 7° heading error — below TURN_TOL_DEG.
-GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN
+HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this close
+                                 # > 2*ARRIVE_PX so it doesn't conflict with in_close_approach;
+                                 # robot starts turning toward its post-arrival heading early
+GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN (ball pickup)
 GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
+GATE_DROPOFF_DEG       = 45     # partial-open at dropoff: lets balls roll out without jamming walls
 BALL_GATE_THRESHOLD_PX = 80     # waypoint is a ball pickup when within this many px
                                  # must exceed half-length trim offset (~66px) or gate
                                  # never fires for trimmed ball waypoints

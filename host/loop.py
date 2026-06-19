@@ -40,7 +40,7 @@ from config import (
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
     load_color_ranges,
     ARRIVE_PX, MAX_STEP_MM, FORWARD_CMD_SCALE, DENSIFY_GAP_PX,
-    BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG,
+    BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG, GATE_DROPOFF_DEG,
     CENTER_OBSTACLE_EXTRA_PX,
     ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
 )
@@ -489,11 +489,12 @@ def run_live(camera_index, link):
             gate_state['ball_pxs'].pop(nearest_idx)
             print("[GATE] COLLECT — ball retained")
 
-        # Dropoff: open to release.
+        # Dropoff: partial-open (45°) to release — wide enough to let balls roll
+        # out but narrow enough not to jam against the wall.
         if idx == len(wps) - 1 and not gate_state['open']:
-            link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
+            link.send_and_wait("GATE_OPEN:{}".format(GATE_DROPOFF_DEG))
             gate_state['open'] = True
-            print("[GATE] OPEN — releasing at dropoff")
+            print("[GATE] OPEN {}° — releasing at dropoff".format(GATE_DROPOFF_DEG))
 
         # Pre-open gate when a ball is 3-5 waypoints away (~60-100 mm).
         # Minimum of 3 so the gate is fully deployed before reaching the ball
