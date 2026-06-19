@@ -98,7 +98,7 @@ def plan_waypoints(detector, frame, robot_pos):
         robot_pos=robot_pos,
         ball_positions=ball_positions,
         dropoff_pos=dropoff,
-        capacity=6,
+        capacity=8,
         initial_heading_deg=INITIAL_HEADING_DEG,
         face_deg=face_deg,
     )
