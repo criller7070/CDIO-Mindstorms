@@ -92,7 +92,9 @@ class EV3NavController:
         self._gate_homed = False
         if self.gate_motor:
             try:
-                self.gate_motor.run_until_stalled(GATE_SPEED, then=Stop.HOLD, duty_limit=50)
+                # Drive to physical closed stop at low speed without duty cap so
+                # we actually reach the stop (duty_limit=50 stalled 45° short).
+                self.gate_motor.run_until_stalled(100, then=Stop.HOLD)
                 self.gate_motor.reset_angle(0)
                 self._gate_homed = True
                 print("[OK] Gate homed to closed position (0 deg)")
