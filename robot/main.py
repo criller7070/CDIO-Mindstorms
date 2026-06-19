@@ -381,6 +381,8 @@ class EV3NavController:
                         self.gate_motor.run_angle(-GATE_SPEED, value)
                     except Exception as e:
                         self._log("Gate open error: {}".format(e))
+                        self.commands_failed += 1
+                        return False
                     self.commands_executed += 1
                     return True
                 else:
@@ -395,6 +397,8 @@ class EV3NavController:
                         self.gate_motor.run_angle(GATE_SPEED, value)
                     except Exception as e:
                         self._log("Gate close error: {}".format(e))
+                        self.commands_failed += 1
+                        return False
                     self.commands_executed += 1
                     return True
                 else:
