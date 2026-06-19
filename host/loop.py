@@ -436,6 +436,13 @@ def run_live(camera_index, link):
                 gate_state['open'] = True
             link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
             gate_state['open'] = False
+            # Remove this ball from the active list so the same ball doesn't
+            # re-trigger gate operations at the next nearby waypoint.
+            nearest_idx = min(range(len(gate_state['ball_pxs'])),
+                              key=lambda i: math.hypot(
+                                  waypoint[0] - gate_state['ball_pxs'][i][0],
+                                  waypoint[1] - gate_state['ball_pxs'][i][1]))
+            gate_state['ball_pxs'].pop(nearest_idx)
             print("[GATE] COLLECT — ball retained")
 
         # Dropoff: open to release.
