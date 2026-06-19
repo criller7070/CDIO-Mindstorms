@@ -17,8 +17,12 @@ Press ESC during countdown to abort without saving.
 """
 import cv2
 import numpy as np
+import customtkinter as ctk
 
 from config import save_color_ranges
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 WHITE_SEED = {'lo': [0, 0, 180], 'hi': [179, 55, 255]}  # wider after CLAHE
@@ -194,20 +198,49 @@ def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_auto_calibration(cap, color_ranges, headless=False):
+    import time
+
+    aborted = [False]
+
     if not headless:
         cv2.namedWindow(WIN)
 
-    import time
-    deadline = time.time() + COUNTDOWN_SEC
+        root = ctk.CTk()
+        root.title("Auto Calibration")
+        root.resizable(False, False)
+        root.attributes('-topmost', True)
+
+        phase_label = ctk.CTkLabel(root, text="Keep ALL objects visible",
+                                   font=ctk.CTkFont(size=14, weight='bold'))
+        phase_label.pack(pady=(16, 6), padx=20)
+
+        status_label = ctk.CTkLabel(root, text="Starting in {}s...".format(COUNTDOWN_SEC),
+                                    font=ctk.CTkFont(size=12))
+        status_label.pack(pady=(0, 8), padx=20)
+
+        progress = ctk.CTkProgressBar(root, width=320)
+        progress.set(0)
+        progress.pack(padx=20, pady=(0, 8))
+
+        def _abort():
+            aborted[0] = True
+
+        ctk.CTkButton(root, text="Abort  (ESC)", command=_abort,
+                      fg_color='#6b2020', hover_color='#8b3030',
+                      width=120).pack(pady=(4, 16))
+
+        root.bind('<Escape>', lambda e: _abort())
+
     print("\n--- Auto Calibration ---")
     print("Keep ALL objects visible. Calibrating in {}s...".format(COUNTDOWN_SEC))
 
     # ── Countdown preview ────────────────────────────────────────────────────
+    deadline = time.time() + COUNTDOWN_SEC
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frame   = cv2.flip(frame, 1)
+        frame     = cv2.flip(frame, 1)
         remaining = max(0.0, deadline - time.time())
         if not headless:
             preview = frame.copy()
@@ -215,24 +248,29 @@ def run_auto_calibration(cap, color_ranges, headless=False):
             preview[_mask_from_range(hsv, color_ranges['RED'])    > 0] = (80,  80,  255)
             preview[_mask_from_range(hsv, color_ranges['ORANGE']) > 0] = (0,  140,  255)
             preview[_white_seed_mask(hsv)                         > 0] = (200, 200, 200)
-            cv2.putText(preview,
-                        "Auto-calibrating in {:.0f}s — keep field in view | ESC=abort".format(
-                            remaining),
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
             if cv2.waitKey(1) & 0xFF == 27:
-                cv2.destroyWindow(WIN)
-                print("Aborted.")
-                return {}
+                aborted[0] = True
+            status_label.configure(text="Starting in {:.0f}s...".format(remaining))
+            progress.set(0)
+            root.update()
         else:
             print("  {:.0f}s remaining...".format(remaining), end='\r')
+        if aborted[0]:
+            if not headless:
+                root.destroy()
+                cv2.destroyWindow(WIN)
+            print("Aborted.")
+            return {}
         if time.time() >= deadline:
             break
 
     # ── Capture ───────────────────────────────────────────────────────────────
     ret, probe = cap.read()
     if not ret:
-        cv2.destroyWindow(WIN)
+        if not headless:
+            root.destroy()
+            cv2.destroyWindow(WIN)
         return {}
     fh, fw = probe.shape[:2]
 
@@ -240,6 +278,9 @@ def run_auto_calibration(cap, color_ranges, headless=False):
     hsv_pools    = {c: [] for c in ('RED', 'ORANGE', 'WHITE')}
     sampled_hsvs = []
     SAMPLE_EVERY = 20   # 50 samples across 1000 frames ≈ 45 MB
+
+    if not headless:
+        phase_label.configure(text="Analysing frames...")
 
     for i in range(CAPTURE_FRAMES):
         ret, frame = cap.read()
@@ -256,10 +297,11 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         if not headless:
             preview = frame.copy()
             preview[red_mask > 0] = (80, 80, 255)
-            cv2.putText(preview, "Analysing... {}%  (temporal filtering active)".format(pct),
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
             cv2.waitKey(1)
+            status_label.configure(text="{}%  (temporal filtering active)".format(pct))
+            progress.set(pct / 100.0)
+            root.update()
         elif pct % 10 == 0:
             print("  {}% captured...".format(pct))
 
@@ -328,6 +370,15 @@ def run_auto_calibration(cap, color_ranges, headless=False):
 
     # ── Result display ────────────────────────────────────────────────────────
     if not headless:
+        if confirmed:
+            result_txt = "Saved: {}".format(', '.join(confirmed.keys()))
+            phase_label.configure(text="Done")
+            status_label.configure(text=result_txt)
+        else:
+            phase_label.configure(text="Nothing found")
+            status_label.configure(text="Calibration unchanged")
+        progress.set(1.0)
+
         ret, frame = cap.read()
         if ret:
             frame  = cv2.flip(frame, 1)
@@ -340,10 +391,10 @@ def run_auto_calibration(cap, color_ranges, headless=False):
                     m = cv2.bitwise_or(m, cv2.inRange(
                         hsv, np.array(ranges['lower2']), np.array(ranges['upper2'])))
                 result[m > 0] = tints.get(color_name, (255, 255, 255))
-            msg = "Done: {}  |  Press any key".format(', '.join(confirmed.keys())) \
-                  if confirmed else "Nothing found  |  Press any key"
-            cv2.putText(result, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.imshow(WIN, cv2.addWeighted(result, 0.5, frame, 0.5, 0))
-            cv2.waitKey(0)
+
+        ctk.CTkButton(root, text="Close", command=root.destroy, width=100).pack(pady=(0, 14))
+        root.update()
+        root.mainloop()
         cv2.destroyWindow(WIN)
     return confirmed
