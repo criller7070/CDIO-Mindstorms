@@ -68,9 +68,10 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         dist = math.hypot(dx, dy)
 
         if dist < ARRIVE_PX:
-            # Before advancing, enforce heading toward the next waypoint.
-            # The robot must be facing the next segment within TURN_TOL_DEG.
-            # This ensures every waypoint acts as a proper turn stop.
+            # Enforce heading toward the next waypoint — ONE correction turn,
+            # then advance immediately WITHOUT re-checking position.
+            # Re-checking position after a turn causes an infinite loop because
+            # the robot's pivot offset moves the center away from the waypoint.
             if idx + 1 < len(waypoints):
                 nx, ny = waypoints[idx + 1]
                 req = math.degrees(math.atan2(ny - y, nx - x))
@@ -83,7 +84,6 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                         print("No ack for {} — aborting.".format(turn_cmd))
                         return False
                     just_turned = True
-                    continue  # re-read pose; still within ARRIVE_PX, recheck heading
             if on_arrive:
                 on_arrive(waypoints[idx], idx, waypoints)
             idx += 1
