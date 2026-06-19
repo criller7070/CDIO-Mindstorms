@@ -10,7 +10,7 @@ import time
 
 from config import (
     ARRIVE_PX, TURN_TOL_DEG, TURN_COMMIT_DEG, TURN_SLOPE, TURN_COAST_DEG,
-    MAX_STEP_MM, MIN_STEP_MM, FORWARD_CMD_SCALE,
+    MAX_STEP_MM, MIN_STEP_MM, FORWARD_CMD_SCALE, ACTUAL_PX_PER_MM,
     MAX_POSE_MISS, REPLAN_PX, REPLAN_EVERY_N,
 )
 
@@ -68,9 +68,26 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         dist = math.hypot(dx, dy)
 
         if dist < ARRIVE_PX:
+            # Before advancing, enforce heading toward the next waypoint.
+            # The robot must be facing the next segment within TURN_TOL_DEG.
+            # This ensures every waypoint acts as a proper turn stop.
+            if idx + 1 < len(waypoints):
+                nx, ny = waypoints[idx + 1]
+                req = math.degrees(math.atan2(ny - y, nx - x))
+                head_err = (req - heading + 180.0) % 360.0 - 180.0
+                if abs(head_err) > TURN_TOL_DEG:
+                    turn_cmd = _turn_command(head_err)
+                    if on_step:
+                        on_step(pose, waypoints[idx], idx, turn_cmd, len(waypoints))
+                    if not link.send_and_wait(turn_cmd):
+                        print("No ack for {} — aborting.".format(turn_cmd))
+                        return False
+                    just_turned = True
+                    continue  # re-read pose; still within ARRIVE_PX, recheck heading
             if on_arrive:
                 on_arrive(waypoints[idx], idx, waypoints)
             idx += 1
+            just_turned = False
             continue
 
         if replan is not None and dist > REPLAN_PX:
@@ -88,7 +105,9 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         # a forward step between turns breaks the overshoot limit-cycle.
         # When the waypoint is directly behind (|err| > 150°) don't turn 180° —
         # just reverse. This eliminates U-turn oscillation on small overshoots.
-        step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
+        # Use actual camera px/mm (measured) for step sizing, not the planner's
+        # value which is ~4x too low and causes every close approach to hit MAX_STEP_MM.
+        step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / ACTUAL_PX_PER_MM))
         if abs(err) > 150:
             cmd = "REVERSE:{}".format(int(round(step_mm)))
             just_turned = False

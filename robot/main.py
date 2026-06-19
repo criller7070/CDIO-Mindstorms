@@ -373,7 +373,10 @@ class EV3NavController:
             elif cmd == "GATE_OPEN":
                 if self.gate_motor:
                     self._log("GATE OPEN {} deg".format(value))
-                    self.gate_motor.run_angle(-GATE_SPEED, value)
+                    try:
+                        self.gate_motor.run_angle(-GATE_SPEED, value)
+                    except Exception as e:
+                        self._log("Gate stall (open) - continuing: {}".format(e))
                     self.commands_executed += 1
                     return True
                 else:
@@ -384,7 +387,10 @@ class EV3NavController:
             elif cmd == "GATE_CLOSE":
                 if self.gate_motor:
                     self._log("GATE CLOSE {} deg".format(value))
-                    self.gate_motor.run_angle(GATE_SPEED, value)
+                    try:
+                        self.gate_motor.run_angle(GATE_SPEED, value)
+                    except Exception as e:
+                        self._log("Gate stall (close) - continuing: {}".format(e))
                     self.commands_executed += 1
                     return True
                 else:

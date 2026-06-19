@@ -110,6 +110,9 @@ MIN_STEP_MM     = 10     # smallest forward nudge worth sending
 # value is ~3.2x the physical mm travelled. Scale the command so a requested
 # physical step actually moves that far (otherwise the robot crawls ~1/3 speed).
 FORWARD_CMD_SCALE      = 3.2288
+# Measured camera scale: FORWARD:161 cmd = 50 mm actual = 69 px in image → 1.38 px/mm.
+# Used for step sizing so close-approach steps don't overshoot the waypoint.
+ACTUAL_PX_PER_MM       = 1.39
 MAX_POSE_MISS          = 60     # give up after this many consecutive frames with no marker
 REPLAN_PX              = 150.0  # re-plan when robot is >150px off its target
 REPLAN_EVERY_N         = 8      # also force a replan after every N forward steps
