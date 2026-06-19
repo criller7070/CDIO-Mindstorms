@@ -84,10 +84,10 @@ def save_color_ranges(ranges):
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX       = 12.0   # waypoint counts as reached within this many pixels.
-                         # Must exceed one forward step (MAX_STEP_MM*px_per_mm ≈ 7px).
-                         # Ball waypoints are trimmed back ~66px (half robot length)
-                         # so the nose stops at ball ± 12px = ± ~34mm.
+ARRIVE_PX       = 20.0   # waypoint counts as reached within this many pixels.
+                         # With DENSIFY_GAP_PX=40px and ACTUAL_PX_PER_MM=1.39,
+                         # one forward step = 20mm = 27.8px. Arrival at 20px lets
+                         # the robot reach the waypoint area without tight looping.
 TURN_TOL_DEG    = 8.0    # rotate only for heading errors larger than this.
                          # TURN_COAST_DEG=3° so 8° leaves 5° cmd headroom before
                          # coast clears the target — prevents limit-cycle oscillation.
@@ -116,8 +116,9 @@ ACTUAL_PX_PER_MM       = 1.39
 MAX_POSE_MISS          = 60     # give up after this many consecutive frames with no marker
 REPLAN_PX              = 150.0  # re-plan when robot is >150px off its target
 REPLAN_EVERY_N         = 8      # also force a replan after every N forward steps
-DENSIFY_GAP_PX         = 20.0   # maximum pixel gap between consecutive waypoints
-                                 # (was 30 — reduced for more heading corrections on approach)
+DENSIFY_GAP_PX         = 40.0   # maximum pixel gap between consecutive waypoints
+                                 # 40px ≈ 29mm. At 40px spacing, 5px positional noise
+                                 # causes only 7° heading error — below TURN_TOL_DEG.
 GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN
 GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
 BALL_GATE_THRESHOLD_PX = 80     # waypoint is a ball pickup when within this many px
