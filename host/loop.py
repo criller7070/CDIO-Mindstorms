@@ -41,6 +41,7 @@ from config import (
     load_color_ranges,
     ARRIVE_PX, MAX_STEP_MM, FORWARD_CMD_SCALE, DENSIFY_GAP_PX,
     BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG,
+    CENTER_OBSTACLE_EXTRA_PX,
     ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
 )
 from detection import BallDetector
@@ -64,7 +65,7 @@ def plan_waypoints(detector, frame, robot_pos):
     x_min, y_min, x_max, y_max = analysis['field_bounds']
     center_pos    = analysis['center_pos']
     wall_margin   = analysis['wall_margin'] or WALL_MARGIN
-    center_radius = analysis.get('center_radius') or CENTER_RADIUS
+    center_radius = (analysis.get('center_radius') or CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
 
     if analysis['field_detected']:
         raw_dropoff = (x_min, (y_min + y_max) // 2)

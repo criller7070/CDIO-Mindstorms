@@ -84,12 +84,13 @@ def save_color_ranges(ranges):
 
 
 # ── Control-loop tunables ─────────────────────────────────────────────────────
-ARRIVE_PX       = 35.0   # waypoint counts as reached within this many pixels.
-                         # Must exceed one forward step, or the robot steps PAST a
-                         # waypoint without registering arrival and spins to go back.
-TURN_TOL_DEG    = 12.0   # rotate only for heading errors larger than this. Must
-                         # exceed the EV3 gyro turn's coast/overshoot, or the loop
-                         # limit-cycles (turn past target, correct back, repeat).
+ARRIVE_PX       = 12.0   # waypoint counts as reached within this many pixels.
+                         # Must exceed one forward step (MAX_STEP_MM*px_per_mm ≈ 7px).
+                         # Ball waypoints are trimmed back ~66px (half robot length)
+                         # so the nose stops at ball ± 12px = ± ~34mm.
+TURN_TOL_DEG    = 8.0    # rotate only for heading errors larger than this.
+                         # TURN_COAST_DEG=3° so 8° leaves 5° cmd headroom before
+                         # coast clears the target — prevents limit-cycle oscillation.
 TURN_COMMIT_DEG = 45.0   # after a turn, drive a forward step before turning again
                          # unless the heading error still exceeds this. Prevents
                          # turn-turn-turn oscillation from small overshoots.
@@ -112,7 +113,13 @@ FORWARD_CMD_SCALE      = 3.2288
 MAX_POSE_MISS          = 60     # give up after this many consecutive frames with no marker
 REPLAN_PX              = 150.0  # re-plan when robot is >150px off its target
 REPLAN_EVERY_N         = 8      # also force a replan after every N forward steps
-DENSIFY_GAP_PX         = 30.0   # maximum pixel gap between consecutive waypoints
+DENSIFY_GAP_PX         = 20.0   # maximum pixel gap between consecutive waypoints
+                                 # (was 30 — reduced for more heading corrections on approach)
 GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN
 GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
-BALL_GATE_THRESHOLD_PX = 40     # waypoint is a ball pickup when within this many px
+BALL_GATE_THRESHOLD_PX = 80     # waypoint is a ball pickup when within this many px
+                                 # must exceed half-length trim offset (~66px) or gate
+                                 # never fires for trimmed ball waypoints
+CENTER_OBSTACLE_EXTRA_PX = 40   # extra px added to X obstacle radius before A*
+                                 # thin X arms cause minEnclosingCircle to underestimate;
+                                 # reduce to 20 if too many reachable balls are skipped
