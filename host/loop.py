@@ -66,6 +66,8 @@ def plan_waypoints(detector, frame, robot_pos):
     center_pos    = analysis['center_pos']
     wall_margin   = analysis['wall_margin'] or WALL_MARGIN
     center_radius = (analysis.get('center_radius') or CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
+    print("X obstacle: raw_r={}px  effective_r={}px (+ robot_half ~42px in grid)".format(
+        analysis.get('center_radius') or CENTER_RADIUS, center_radius))
 
     if analysis['field_detected']:
         raw_dropoff = (x_min, (y_min + y_max) // 2)

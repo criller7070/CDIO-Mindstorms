@@ -86,13 +86,18 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         # Turn only when meaningfully off-heading, AND not immediately after
         # another turn unless we're still badly off (> TURN_COMMIT_DEG). Forcing
         # a forward step between turns breaks the overshoot limit-cycle.
-        turn_now = (abs(err) > TURN_TOL_DEG
-                    and not (just_turned and abs(err) <= TURN_COMMIT_DEG))
-        if turn_now:
+        # When the waypoint is directly behind (|err| > 150°) don't turn 180° —
+        # just reverse. This eliminates U-turn oscillation on small overshoots.
+        step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
+        if abs(err) > 150:
+            cmd = "REVERSE:{}".format(int(round(step_mm)))
+            just_turned = False
+            fwd_steps += 1
+        elif (abs(err) > TURN_TOL_DEG
+              and not (just_turned and abs(err) <= TURN_COMMIT_DEG)):
             cmd = _turn_command(err)
             just_turned = True
         else:
-            step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / px_per_mm))
             cmd = "FORWARD:{}".format(int(round(step_mm * FORWARD_CMD_SCALE)))
             just_turned = False
             fwd_steps += 1
@@ -103,7 +108,8 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             print("No ack for {} — aborting.".format(cmd))
             return False
 
-        if (not turn_now and replan is not None
+        is_forward_move = cmd.startswith("FORWARD") or cmd.startswith("REVERSE")
+        if (is_forward_move and replan is not None
                 and fwd_steps > 0 and fwd_steps % REPLAN_EVERY_N == 0):
             new_wp = replan()
             if new_wp:

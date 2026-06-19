@@ -120,6 +120,7 @@ GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
 BALL_GATE_THRESHOLD_PX = 80     # waypoint is a ball pickup when within this many px
                                  # must exceed half-length trim offset (~66px) or gate
                                  # never fires for trimmed ball waypoints
-CENTER_OBSTACLE_EXTRA_PX = 40   # extra px added to X obstacle radius before A*
-                                 # thin X arms cause minEnclosingCircle to underestimate;
-                                 # reduce to 20 if too many reachable balls are skipped
+CENTER_OBSTACLE_EXTRA_PX = 10   # extra px added to X obstacle radius before A*
+                                 # _build_grid already adds robot_half_width_px (~42px),
+                                 # so keep this small — 10px compensates camera underestimate
+                                 # without blocking reachable balls
