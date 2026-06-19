@@ -17,6 +17,15 @@ from host.config import save_color_ranges
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+
+def _to_hsv_norm(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    v = _CLAHE.apply(v)
+    return cv2.merge([h, s, v])
+
 COLORS = ['WHITE', 'ORANGE', 'RED']
 TINTS  = {'WHITE': (255, 255, 255), 'ORANGE': (0, 140, 255), 'RED': (0, 0, 255)}
 
@@ -187,7 +196,7 @@ def run_calibration(cap, color_ranges):
         color = COLORS[color_idx[0]]
         h_min, h_max, s_min, s_max, v_min, v_max = _get_values()
 
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = _to_hsv_norm(frame)
         if color == 'RED':
             m1   = cv2.inRange(hsv, np.array([0,     s_min, v_min]),
                                     np.array([h_min, s_max, v_max]))

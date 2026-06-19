@@ -6,22 +6,51 @@ are reflected immediately because Python dicts are passed by reference.
 """
 import cv2
 import numpy as np
+import threading
+import time
 
 
 class BallDetector:
-    def __init__(self, color_ranges):
+    def __init__(self, color_ranges, roboflow_api_key="", roboflow_model_id="",
+                 roboflow_api_url="https://serverless.roboflow.com"):
         self.color_ranges = color_ranges
+        self._roboflow_api_key  = roboflow_api_key
+        self._roboflow_model_id = roboflow_model_id
+        self._roboflow_client   = None
+        if roboflow_api_key:
+            try:
+                from inference_sdk import InferenceHTTPClient
+                self._roboflow_client = InferenceHTTPClient(
+                    api_url=roboflow_api_url,
+                    api_key=roboflow_api_key,
+                )
+                print("Roboflow YOLO backend active ({})".format(roboflow_model_id))
+                # Background thread so the main loop never blocks on network I/O.
+                self._yolo_latest_frame  = None   # frame waiting to be processed
+                self._yolo_cached_result = []     # last good prediction list
+                self._yolo_lock  = threading.Lock()
+                self._yolo_event = threading.Event()
+                t = threading.Thread(target=self._yolo_worker, daemon=True)
+                t.start()
+            except ImportError:
+                print("inference_sdk not installed — falling back to HoughCircles")
 
         # Detection parameters (all shape gates are in color_ranges)
         self.min_ball_area      = 10
         self.border_margin      = 0
-        self.ball_confirm_frames = 7
+        self.ball_confirm_frames = 4
         self.ball_miss_frames   = 6
         self.ball_match_distance = 18
         self._ball_tracks       = {"WHITE": [], "ORANGE": []}
         self.min_red_line_length = 50
         self._center_ema        = None   # smoothed centre position (x, y)
         self._center_r_ema      = None   # smoothed centre marker radius (px)
+
+        # CLAHE normalises the V channel locally (8×8 tiles) so that one
+        # dark corner and one bright corner of the field produce similar V
+        # values for the same physical colour.  One instance, reused every
+        # frame to avoid repeated allocation.
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         # ── Robot pose (ArUco marker) ──────────────────────────────────────────
         # The closed-loop controller reads the robot's live pose from a single
@@ -41,11 +70,27 @@ class BallDetector:
             # opencv-python (non-contrib) or an old API: robot detection disabled.
             self._aruco_detector = None
 
+    def _to_hsv(self, frame):
+        """BGR → HSV with CLAHE applied to the V channel.
+
+        Normalising V locally means a global HSV threshold works across the
+        whole field even when illumination is uneven — dark corners are lifted
+        and over-exposed areas are clipped, so the same lower/upper bounds
+        catch the same physical colours everywhere in the frame.
+        """
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        v = self._clahe.apply(v)
+        return cv2.merge([h, s, v])
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     # pixels a ball centre must be inside the red-wall bounding box.
     # Raises it enough to exclude detections sitting ON the wall surface.
     FIELD_INSET = 10
+
+    # Pixels around the robot marker centre to exclude from ball detection.
+    ROBOT_EXCLUSION_R = 50
 
     def analyze_course(self, frame):
         """Run all detections and return a single result dict."""
@@ -60,14 +105,25 @@ class BallDetector:
 
         if field_detected:
             hull = cv2.convexHull(np.vstack(red_cnts))
-            balls = [b for b in balls
-                     if cv2.pointPolygonTest(
-                         hull, (float(b['x']), float(b['y'])), True) >= self.FIELD_INSET]
             field_bounds = self._bounds_from_mask(red_walls['mask'])
+            fx0, fy0, fx1, fy1 = field_bounds
+            fi = self.FIELD_INSET
+            balls = [b for b in balls
+                     if fx0 + fi <= b['x'] <= fx1 - fi
+                     and fy0 + fi <= b['y'] <= fy1 - fi]
             field_hull   = hull
         else:
             field_bounds = (20, 20, fw - 20, fh - 20)
             field_hull   = None
+
+        # Remove any "ball" whose centre falls inside the robot body — the
+        # robot's white ArUco marker frame creates circular Hough artefacts.
+        robot_pose = self.detect_robot(frame)
+        if robot_pose is not None:
+            rx, ry, _ = robot_pose
+            er2 = self.ROBOT_EXCLUSION_R ** 2
+            balls = [b for b in balls
+                     if (b['x'] - rx) ** 2 + (b['y'] - ry) ** 2 > er2]
 
         center_pos, center_radius = self._detect_center(
             red_cnts, field_bounds, field_detected)
@@ -232,34 +288,139 @@ class BallDetector:
 
     def detect_balls(self, frame):
         """Return (balls, raw_white_mask, raw_orange_mask)."""
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = self._to_hsv(frame)
 
+        # Keep raw HSV masks for calibration visualisation — not used for detection.
         cr_w = self.color_ranges['WHITE']
-        mask_white  = cv2.inRange(hsv, np.array(cr_w['lower']), np.array(cr_w['upper']))
-
         cr_o = self.color_ranges['ORANGE']
-        mask_orange = cv2.inRange(hsv, np.array(cr_o['lower']), np.array(cr_o['upper']))
+        raw_white  = cv2.inRange(hsv, np.array(cr_w['lower']), np.array(cr_w['upper']))
+        raw_orange = cv2.inRange(hsv, np.array(cr_o['lower']), np.array(cr_o['upper']))
 
-        # Save raw masks before any modification — these match the calibration view.
-        raw_white  = mask_white.copy()
-        raw_orange = mask_orange.copy()
+        if self._roboflow_client:
+            candidates = self._find_balls_yolo(frame)
+        else:
+            candidates = self._find_balls_hough(hsv, frame.shape[:2])
 
-        if self.border_margin > 0:
-            m = self.border_margin
-            for mask in (mask_white, mask_orange):
-                mask[:m, :] = 0;  mask[-m:, :] = 0
-                mask[:, :m] = 0;  mask[:, -m:] = 0
+        white_cands  = [b for b in candidates if b['color'] == 'WHITE']
+        orange_cands = [b for b in candidates if b['color'] == 'ORANGE']
 
-        white_balls  = self._update_stable_ball_tracks(
-            self._find_ball_centers(mask_white,  "WHITE",  frame.shape[:2], hsv), "WHITE")
-        orange_balls = self._update_stable_ball_tracks(
-            self._find_ball_centers(mask_orange, "ORANGE", frame.shape[:2], hsv), "ORANGE")
+        white_balls  = self._update_stable_ball_tracks(white_cands,  'WHITE')
+        orange_balls = self._update_stable_ball_tracks(orange_cands, 'ORANGE')
 
         return white_balls + orange_balls, raw_white, raw_orange
 
+    # Minimum seconds between Roboflow API calls — limits quota usage.
+    YOLO_CALL_INTERVAL = 1.0
+
+    def _yolo_worker(self):
+        """Background thread: process the latest queued frame and cache result."""
+        last_call = 0.0
+        while True:
+            self._yolo_event.wait()
+            self._yolo_event.clear()
+            now = time.monotonic()
+            wait = self.YOLO_CALL_INTERVAL - (now - last_call)
+            if wait > 0:
+                time.sleep(wait)
+            with self._yolo_lock:
+                frame = self._yolo_latest_frame
+            if frame is None:
+                continue
+            last_call = time.monotonic()
+            try:
+                result = self._roboflow_client.infer(frame, model_id=self._roboflow_model_id)
+                preds  = result.get('predictions', [])
+            except Exception:
+                continue
+            balls = []
+            for p in preds:
+                cls = p.get('class', '')
+                if cls == 'Ball white':
+                    color = 'WHITE'
+                elif cls == 'Ball orange':
+                    color = 'ORANGE'
+                else:
+                    continue
+                cx = int(round(p['x']))
+                cy = int(round(p['y']))
+                r  = max(1, int(round(min(p['width'], p['height']) / 2)))
+                balls.append({
+                    'x': cx, 'y': cy, 'radius': r,
+                    'area': float(np.pi * r * r), 'color': color,
+                    'circularity': 1.0, 'fill_ratio': 1.0, 'solidity': 1.0,
+                })
+            with self._yolo_lock:
+                self._yolo_cached_result = balls
+
+    def _find_balls_yolo(self, frame):
+        """Submit frame to background worker; return last cached result immediately."""
+        with self._yolo_lock:
+            self._yolo_latest_frame = frame
+            cached = list(self._yolo_cached_result)
+        self._yolo_event.set()
+        return cached
+
+    def _find_balls_hough(self, hsv, frame_shape):
+        """Detect balls via HoughCircles on the V channel, then classify by mean HSV.
+
+        HoughCircles works from gradient edges, so it finds circles even when a
+        ball sits right at the V threshold — unlike contour analysis on a binary
+        mask, it is not sensitive to the exact per-pixel threshold value.
+        Each candidate circle is accepted as WHITE or ORANGE based on the mean
+        HSV measured inside it, which is far more stable than per-pixel checks.
+        """
+        fh, fw = frame_shape
+        cr_w = self.color_ranges['WHITE']
+        cr_o = self.color_ranges['ORANGE']
+
+        r_min = min(cr_w.get('radius_min', 5), cr_o.get('radius_min', 5))
+        r_max = max(cr_w.get('radius_max', 22), cr_o.get('radius_max', 22))
+
+        _, _, v = cv2.split(hsv)
+        v_blur = cv2.GaussianBlur(v, (5, 5), 1.5)
+
+        circles = cv2.HoughCircles(
+            v_blur,
+            cv2.HOUGH_GRADIENT,
+            dp=1,
+            minDist=35,
+            param1=60,
+            param2=10,
+            minRadius=r_min,
+            maxRadius=r_max,
+        )
+        if circles is None:
+            return []
+
+        balls = []
+        for cx, cy, cr in np.round(circles[0]).astype(int):
+            if not (0 <= cx < fw and 0 <= cy < fh):
+                continue
+            cmask = np.zeros((fh, fw), dtype=np.uint8)
+            cv2.circle(cmask, (cx, cy), max(cr - 1, 1), 255, -1)
+            mh, ms, mv, _ = cv2.mean(hsv, mask=cmask)
+
+            if (cr_w['lower'][1] <= ms <= cr_w['upper'][1]
+                    and mv >= cr_w['lower'][2]):
+                color = 'WHITE'
+            elif (cr_o['lower'][0] <= mh <= cr_o['upper'][0]
+                  and ms >= cr_o['lower'][1]
+                  and mv >= cr_o['lower'][2]
+                  and cr_o['mean_h_min'] <= mh <= cr_o['mean_h_max']):
+                color = 'ORANGE'
+            else:
+                continue
+
+            balls.append({
+                'x': int(cx), 'y': int(cy), 'radius': int(cr),
+                'area': float(np.pi * cr * cr), 'color': color,
+                'circularity': 1.0, 'fill_ratio': 1.0, 'solidity': 1.0,
+            })
+        return balls
+
     def detect_red_walls(self, frame):
         """Return dict with mask, edges, and Hough lines for the red boundary."""
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = self._to_hsv(frame)
         cr  = self.color_ranges['RED']
         m1  = cv2.inRange(hsv, np.array(cr['lower']),  np.array(cr['upper']))
         m2  = cv2.inRange(hsv, np.array(cr['lower2']), np.array(cr['upper2']))

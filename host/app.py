@@ -22,6 +22,7 @@ from config import (
     WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
+    ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
     load_color_ranges,
 )
 from detection import BallDetector
@@ -35,6 +36,10 @@ class VisionApp:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
+        # Fixed exposure prevents the camera from cycling brightness, which
+        # would cause balls to flicker below the HSV threshold on dark frames.
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 = manual in MSMF
+        self.cap.set(cv2.CAP_PROP_EXPOSURE, -5)
 
         self.mission_file      = mission_file
         self.mission_commands  = []
@@ -45,7 +50,10 @@ class VisionApp:
         # color_ranges is a shared dict — calibration mutates it in-place so
         # the detector picks up changes without any extra wiring.
         self.color_ranges = load_color_ranges()
-        self.detector     = BallDetector(self.color_ranges)
+        self.detector     = BallDetector(self.color_ranges,
+                                         roboflow_api_key=ROBOFLOW_API_KEY,
+                                         roboflow_model_id=ROBOFLOW_MODEL_ID,
+                                         roboflow_api_url=ROBOFLOW_API_URL)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -461,6 +469,7 @@ class VisionApp:
         composite = cv2.addWeighted(overlay, 0.45, frame, 0.55, 0)
 
         base = "screenshot_{:03d}".format(number)
+        cv2.imwrite(os.path.join(folder, base + "_raw.png"),        frame)
         cv2.imwrite(os.path.join(folder, base + ".png"),            composite)
         cv2.imwrite(os.path.join(folder, base + "_annotated.png"),  display_frame)
         cv2.imwrite(os.path.join(folder, "white_mask.png"),  wmask)

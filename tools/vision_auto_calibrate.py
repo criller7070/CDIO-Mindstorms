@@ -22,7 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from host.config import save_color_ranges
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
-WHITE_SEED = {'lo': [0, 0, 200], 'hi': [179, 40, 255]}
+WHITE_SEED = {'lo': [0, 0, 180], 'hi': [179, 55, 255]}  # wider after CLAHE
+
+# CLAHE normalises V locally — must match the detector (vision_detector._to_hsv).
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 BALL_MIN_CIRC       = 0.55
 BALL_MIN_CIRC_WHITE = 0.70   # stricter — glare passes the brightness seed
@@ -42,6 +45,14 @@ WIN = 'Auto Calibration'
 
 
 # ── Mask helpers ──────────────────────────────────────────────────────────────
+
+def _to_hsv_norm(frame):
+    """Same normalization as BallDetector._to_hsv — CLAHE on V channel."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    v = _CLAHE.apply(v)
+    return cv2.merge([h, s, v])
+
 
 def _mask_from_range(hsv, cr):
     m = cv2.inRange(hsv, np.array(cr['lower']), np.array(cr['upper']))
@@ -148,7 +159,7 @@ def _compute_range(pixels, color_name):
 def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
     fh, fw = frame.shape[:2]
     if hsv is None:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = _to_hsv_norm(frame)
 
     # RED — boundary + accumulate
     red_mask   = _morph(_mask_from_range(hsv, color_ranges['RED']), close=7, open_=5)
@@ -183,8 +194,9 @@ def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def run_auto_calibration(cap, color_ranges):
-    cv2.namedWindow(WIN)
+def run_auto_calibration(cap, color_ranges, headless=False):
+    if not headless:
+        cv2.namedWindow(WIN)
 
     import time
     deadline = time.time() + COUNTDOWN_SEC
@@ -197,21 +209,24 @@ def run_auto_calibration(cap, color_ranges):
         if not ret:
             break
         frame   = cv2.flip(frame, 1)
-        preview = frame.copy()
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        preview[_mask_from_range(hsv, color_ranges['RED'])    > 0] = (80,  80,  255)
-        preview[_mask_from_range(hsv, color_ranges['ORANGE']) > 0] = (0,  140,  255)
-        preview[_white_seed_mask(hsv)                         > 0] = (200, 200, 200)
         remaining = max(0.0, deadline - time.time())
-        cv2.putText(preview,
-                    "Auto-calibrating in {:.0f}s — keep field in view | ESC=abort".format(
-                        remaining),
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
-        if cv2.waitKey(1) & 0xFF == 27:
-            cv2.destroyWindow(WIN)
-            print("Aborted.")
-            return {}
+        if not headless:
+            preview = frame.copy()
+            hsv = _to_hsv_norm(frame)
+            preview[_mask_from_range(hsv, color_ranges['RED'])    > 0] = (80,  80,  255)
+            preview[_mask_from_range(hsv, color_ranges['ORANGE']) > 0] = (0,  140,  255)
+            preview[_white_seed_mask(hsv)                         > 0] = (200, 200, 200)
+            cv2.putText(preview,
+                        "Auto-calibrating in {:.0f}s — keep field in view | ESC=abort".format(
+                            remaining),
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
+            if cv2.waitKey(1) & 0xFF == 27:
+                cv2.destroyWindow(WIN)
+                print("Aborted.")
+                return {}
+        else:
+            print("  {:.0f}s remaining...".format(remaining), end='\r')
         if time.time() >= deadline:
             break
 
@@ -232,19 +247,22 @@ def run_auto_calibration(cap, color_ranges):
         if not ret:
             break
         frame    = cv2.flip(frame, 1)
-        hsv      = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv      = _to_hsv_norm(frame)
         red_mask = _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv)
 
         if i % SAMPLE_EVERY == 0:
             sampled_hsvs.append(hsv)
 
         pct = int((i + 1) / CAPTURE_FRAMES * 100)
-        preview = frame.copy()
-        preview[red_mask > 0] = (80, 80, 255)
-        cv2.putText(preview, "Analysing... {}%  (temporal filtering active)".format(pct),
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
-        cv2.waitKey(1)
+        if not headless:
+            preview = frame.copy()
+            preview[red_mask > 0] = (80, 80, 255)
+            cv2.putText(preview, "Analysing... {}%  (temporal filtering active)".format(pct),
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.imshow(WIN, cv2.addWeighted(preview, 0.5, frame, 0.5, 0))
+            cv2.waitKey(1)
+        elif pct % 10 == 0:
+            print("  {}% captured...".format(pct))
 
     # ── Temporal filter + compute ranges ─────────────────────────────────────
     threshold_count = HIT_THRESHOLD * CAPTURE_FRAMES
@@ -315,25 +333,25 @@ def run_auto_calibration(cap, color_ranges):
         print("Nothing detected — calibration unchanged.")
 
     # ── Result display ────────────────────────────────────────────────────────
-    ret, frame = cap.read()
-    if ret:
-        frame  = cv2.flip(frame, 1)
-        result = frame.copy()
-        hsv    = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        tints  = {'RED': (80,80,255), 'ORANGE': (0,140,255), 'WHITE': (200,200,200)}
-        for color_name, ranges in confirmed.items():
-            m = cv2.inRange(hsv, np.array(ranges['lower']), np.array(ranges['upper']))
-            if 'lower2' in ranges:
-                m = cv2.bitwise_or(m, cv2.inRange(
-                    hsv, np.array(ranges['lower2']), np.array(ranges['upper2'])))
-            result[m > 0] = tints.get(color_name, (255, 255, 255))
-        msg = "Done: {}  |  Press any key".format(', '.join(confirmed.keys())) \
-              if confirmed else "Nothing found  |  Press any key"
-        cv2.putText(result, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow(WIN, cv2.addWeighted(result, 0.5, frame, 0.5, 0))
-        cv2.waitKey(0)
-
-    cv2.destroyWindow(WIN)
+    if not headless:
+        ret, frame = cap.read()
+        if ret:
+            frame  = cv2.flip(frame, 1)
+            result = frame.copy()
+            hsv    = _to_hsv_norm(frame)
+            tints  = {'RED': (80,80,255), 'ORANGE': (0,140,255), 'WHITE': (200,200,200)}
+            for color_name, ranges in confirmed.items():
+                m = cv2.inRange(hsv, np.array(ranges['lower']), np.array(ranges['upper']))
+                if 'lower2' in ranges:
+                    m = cv2.bitwise_or(m, cv2.inRange(
+                        hsv, np.array(ranges['lower2']), np.array(ranges['upper2'])))
+                result[m > 0] = tints.get(color_name, (255, 255, 255))
+            msg = "Done: {}  |  Press any key".format(', '.join(confirmed.keys())) \
+                  if confirmed else "Nothing found  |  Press any key"
+            cv2.putText(result, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.imshow(WIN, cv2.addWeighted(result, 0.5, frame, 0.5, 0))
+            cv2.waitKey(0)
+        cv2.destroyWindow(WIN)
     return confirmed
 
 
