@@ -8,7 +8,7 @@ Commands: FORWARD:distance, TURN:angle, REVERSE:distance, SPEED:value, STOP
 
 from pybricks.hubs import EV3Brick
 from pybricks.ev3devices import Motor, GyroSensor, ColorSensor
-from pybricks.parameters import Port, Color
+from pybricks.parameters import Port, Color, Stop
 from pybricks.robotics import DriveBase
 import time
 import threading
@@ -79,13 +79,25 @@ class EV3NavController:
             self.lift_motor = None
             print("[DEBUG] Port C lift motor not found, skipping lift commands")
 
-        # Test port D (gate) 
+        # Test port D (gate)
         try:
             self.gate_motor = Motor(Port.D)
             print("[OK] Port D gate motor found")
         except Exception as e:
             self.gate_motor = None
-            print("[DEBUG] Port D gate motor not found, skipping gate commands")    
+            print("[DEBUG] Port D gate motor not found, skipping gate commands")
+
+        # Home gate to closed physical stop so subsequent run_target calls
+        # use absolute angles and never drift past the stop (avoids EIO errors).
+        self._gate_homed = False
+        if self.gate_motor:
+            try:
+                self.gate_motor.run_until_stalled(GATE_SPEED, then=Stop.HOLD, duty_limit=50)
+                self.gate_motor.reset_angle(0)
+                self._gate_homed = True
+                print("[OK] Gate homed to closed position (0 deg)")
+            except Exception as e:
+                print("[WARN] Gate homing failed ({}), using relative control".format(e))    
         
         # Try DriveBase with minimal parameters
         try:
@@ -374,9 +386,13 @@ class EV3NavController:
                 if self.gate_motor:
                     self._log("GATE OPEN {} deg".format(value))
                     try:
-                        self.gate_motor.run_angle(-GATE_SPEED, value)
+                        if self._gate_homed:
+                            # Absolute: 0=closed, -value=open
+                            self.gate_motor.run_target(GATE_SPEED, -value)
+                        else:
+                            self.gate_motor.run_angle(-GATE_SPEED, value)
                     except Exception as e:
-                        self._log("Gate stall (open) - continuing: {}".format(e))
+                        self._log("Gate stall (open): {}".format(e))
                     self.commands_executed += 1
                     return True
                 else:
@@ -388,9 +404,13 @@ class EV3NavController:
                 if self.gate_motor:
                     self._log("GATE CLOSE {} deg".format(value))
                     try:
-                        self.gate_motor.run_angle(GATE_SPEED, value)
+                        if self._gate_homed:
+                            # Absolute: always go back to 0 (closed stop)
+                            self.gate_motor.run_target(GATE_SPEED, 0)
+                        else:
+                            self.gate_motor.run_angle(GATE_SPEED, value)
                     except Exception as e:
-                        self._log("Gate stall (close) - continuing: {}".format(e))
+                        self._log("Gate stall (close): {}".format(e))
                     self.commands_executed += 1
                     return True
                 else:
