@@ -105,14 +105,18 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         # a forward step between turns breaks the overshoot limit-cycle.
         # When the waypoint is directly behind (|err| > 150°) don't turn 180° —
         # just reverse. This eliminates U-turn oscillation on small overshoots.
+        # Within 2*ARRIVE_PX of the target, suppress heading correction: turning
+        # in place drifts the ArUco marker and causes repeated oscillation.
         # Use actual camera px/mm (measured) for step sizing, not the planner's
         # value which is ~4x too low and causes every close approach to hit MAX_STEP_MM.
         step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / ACTUAL_PX_PER_MM))
-        if abs(err) > 150:
+        in_close_approach = dist < 2 * ARRIVE_PX
+        if abs(err) > 150 and not in_close_approach:
             cmd = "REVERSE:{}".format(int(round(step_mm)))
             just_turned = False
             fwd_steps += 1
         elif (abs(err) > TURN_TOL_DEG
+              and not in_close_approach
               and not (just_turned and abs(err) <= TURN_COMMIT_DEG)):
             cmd = _turn_command(err)
             just_turned = True

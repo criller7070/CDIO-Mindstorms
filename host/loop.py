@@ -403,6 +403,22 @@ def run_live(camera_index, link):
         print("ERROR: could not connect/handshake with the EV3 bridge.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
+    # Print EV3 init log so motor status is visible in this output file.
+    tcp_host = getattr(link, 'host', None)
+    if tcp_host:
+        import subprocess
+        try:
+            ev3_log = subprocess.run(
+                ['ssh', 'robot@{}'.format(tcp_host), 'cat /tmp/main.log'],
+                capture_output=True, text=True, timeout=6
+            ).stdout.strip()
+            if ev3_log:
+                print("=== EV3 init log ===")
+                print(ev3_log)
+                print("====================")
+        except Exception as e:
+            print("Could not read EV3 init log: {}".format(e))
+
     link.send_and_wait("SPEED:300")
 
     def get_pose():
