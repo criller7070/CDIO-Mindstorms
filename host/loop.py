@@ -119,6 +119,23 @@ def _flatten_segs(segs, min_gap_px=6.0):
     return pts
 
 
+def _add_dropoff_approach(waypoints, dropoff, offset_px=100):
+    """Insert a perpendicular-approach waypoint before the dropoff.
+
+    The dropoff is on the left wall so the robot must face west (180°).
+    Inserting a waypoint offset_px to the right of the dropoff forces the
+    robot to align on the west-bound line BEFORE the final approach,
+    so heading is already correct at the wall rather than corrected there.
+    """
+    if len(waypoints) < 2:
+        return waypoints
+    dx, dy = dropoff
+    approach = (dx + offset_px, dy)
+    result = list(waypoints)
+    result.insert(len(result) - 1, approach)
+    return result
+
+
 def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
     """Insert intermediate checkpoints so no consecutive pair is more than
     max_gap_px apart.
@@ -163,6 +180,7 @@ class CameraPoseSource:
         self.aborted = False
         self.target = None
         self.waypoints = None
+        self.ball_pxs = []   # [(x,y), ...] updated from gate_state during run
         self._lock = threading.Lock()
         self._latest_frame = None
         self._latest_pose = None
@@ -183,8 +201,9 @@ class CameraPoseSource:
                 self._latest_pose = pose
                 waypoints = self.waypoints
                 target = self.target
+                ball_pxs = list(self.ball_pxs)
             if self.show:
-                self._render(frame, pose, waypoints, target)
+                self._render(frame, pose, waypoints, target, ball_pxs)
 
     def grab(self):
         with self._lock:
@@ -198,13 +217,20 @@ class CameraPoseSource:
         with self._lock:
             return self._latest_pose
 
-    def _render(self, frame, pose, waypoints, target):
+    def _render(self, frame, pose, waypoints, target, ball_pxs=None):
         vis = frame.copy()
         if waypoints:
             for i in range(1, len(waypoints)):
                 p0 = tuple(map(int, waypoints[i - 1]))
                 p1 = tuple(map(int, waypoints[i]))
                 cv2.line(vis, p0, p1, (80, 80, 80), 1)
+        # Draw detected balls with pickup-order numbers.
+        if ball_pxs:
+            for n, (bx, by) in enumerate(ball_pxs, 1):
+                bpt = (int(bx), int(by))
+                cv2.circle(vis, bpt, 8, (0, 200, 255), 2)
+                cv2.putText(vis, str(n), (bpt[0] + 10, bpt[1] - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
         if target is not None:
             t = tuple(map(int, target))
             cv2.circle(vis, t, int(ARRIVE_PX), (255, 0, 255), 1)
@@ -383,6 +409,7 @@ def run_live(camera_index, link):
     waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
         detector, frame, robot_pos)
     waypoints = _densify_waypoints(waypoints)
+    waypoints = _add_dropoff_approach(waypoints, dropoff)
     source.waypoints = waypoints
     print("Robot at {} heading {:.1f}deg".format(robot_pos, robot_pose[2]))
     print("Field detected: {}  bounds: {}".format(
@@ -437,6 +464,7 @@ def run_live(camera_index, link):
         'dropoff':  dropoff,
         'open':     False,
     }
+    source.ball_pxs = gate_state['ball_pxs']  # shared reference — updates live in renderer
 
     def _near_ball(wp):
         bps = gate_state['ball_pxs']
@@ -485,8 +513,10 @@ def run_live(camera_index, link):
             return None
         wp, _, new_analysis, new_dropoff, _ = plan_waypoints(detector, f, (p[0], p[1]))
         wp = _densify_waypoints(wp)
+        wp = _add_dropoff_approach(wp, new_dropoff)
         source.waypoints = wp
         gate_state['ball_pxs'] = [(b['x'], b['y']) for b in new_analysis['balls']]
+        source.ball_pxs = gate_state['ball_pxs']
         gate_state['dropoff'] = new_dropoff
         print("Re-planned: {} waypoints, {} balls.".format(len(wp), len(gate_state['ball_pxs'])))
         return wp
