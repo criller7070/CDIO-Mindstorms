@@ -65,9 +65,11 @@ def plan_waypoints(detector, frame, robot_pos):
     x_min, y_min, x_max, y_max = analysis['field_bounds']
     center_pos    = analysis['center_pos']
     wall_margin   = analysis['wall_margin'] or WALL_MARGIN
-    center_radius = (analysis.get('center_radius') or CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
-    print("X obstacle: raw_r={}px  effective_r={}px (+ robot_half ~42px in grid)".format(
-        analysis.get('center_radius') or CENTER_RADIUS, center_radius))
+    # minEnclosingCircle on X arms measures tip-to-tip, so cap to avoid over-blocking.
+    detected_r = analysis.get('center_radius') or CENTER_RADIUS
+    center_radius = min(detected_r, CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
+    print("X obstacle: raw_r={}px  capped_r={}px  effective_r={}px (+ robot_half ~42px in grid)".format(
+        detected_r, min(detected_r, CENTER_RADIUS), center_radius))
 
     if analysis['field_detected']:
         raw_dropoff = (x_min, (y_min + y_max) // 2)
@@ -427,17 +429,26 @@ def run_live(camera_index, link):
         return min(math.hypot(wp[0]-b[0], wp[1]-b[1]) for b in bps) < BALL_GATE_THRESHOLD_PX
 
     def on_arrive(waypoint, idx, wps):
-        if _near_ball(waypoint) and gate_state['open']:
+        # At a ball waypoint: open if still closed (sweep in ball), then close to retain.
+        if _near_ball(waypoint):
+            if not gate_state['open']:
+                link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
+                gate_state['open'] = True
             link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
             gate_state['open'] = False
-            print("[GATE] CLOSE — ball retained")
+            print("[GATE] COLLECT — ball retained")
+
+        # Dropoff: open to release.
         if idx == len(wps) - 1 and not gate_state['open']:
             link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
             gate_state['open'] = True
             print("[GATE] OPEN — releasing at dropoff")
-        # Pre-open gate when a ball is within the next 4 waypoints (~90 mm).
+
+        # Pre-open gate when a ball is 3-5 waypoints away (~60-100 mm).
+        # Minimum of 3 so the gate is fully deployed before reaching the ball
+        # and doesn't stay open during long transit segments between balls.
         if not gate_state['open']:
-            for look in range(1, min(5, len(wps) - idx)):
+            for look in range(3, min(6, len(wps) - idx)):
                 if _near_ball(wps[idx + look]):
                     link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
                     gate_state['open'] = True
