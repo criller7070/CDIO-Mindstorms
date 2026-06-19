@@ -14,18 +14,19 @@ import glob
 import re
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tools_path_planner import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
-from vision_config import (
+from pathfinding import FieldPlanner, FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+from config import (
     CAMERA_INDEX, MISSION_FILE, SCREENSHOT_DIR, MASK_DIR,
     WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
     load_color_ranges,
 )
-from vision_detector import BallDetector
-from vision_calibration import run_calibration
-from vision_auto_calibrate import run_auto_calibration
+from detection import BallDetector
+from tools.vision_calibration import run_calibration
+from tools.vision_auto_calibrate import run_auto_calibration
 
 
 class VisionApp:
@@ -349,7 +350,7 @@ class VisionApp:
                     cv2.imshow('Planned Path', debug_vis)
 
                 elif key == ord('v'):
-                    sim_path = os.path.join(os.path.dirname(__file__), 'vision_simulator.py')
+                    sim_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'tools', 'vision_simulator.py')
                     subprocess.Popen([sys.executable, sim_path])
                     print("Simulator launched.")
 

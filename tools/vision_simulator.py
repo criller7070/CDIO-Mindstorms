@@ -21,13 +21,15 @@ import time
 import cv2
 import numpy as np
 
-from vision_config import (
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from host.config import (
     MISSION_FILE,
     INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
 )
-from tools_path_planner import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+from host.pathfinding import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
 # ── Display layout ────────────────────────────────────────────────────────────
 CANVAS_W   = 1050

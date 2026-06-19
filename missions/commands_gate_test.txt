@@ -1,7 +1,0 @@
-# Simple test for gate commands
-SPEED:200
-GATE_OPEN:90
-FORWARD:100
-STOP
-GATE_CLOSE:90
-STOP

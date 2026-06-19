@@ -17,7 +17,9 @@ Press ESC during countdown to abort without saving.
 """
 import cv2
 import numpy as np
-from vision_config import save_color_ranges
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from host.config import save_color_ranges
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 WHITE_SEED = {'lo': [0, 0, 200], 'hi': [179, 40, 255]}

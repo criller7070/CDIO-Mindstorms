@@ -10,7 +10,9 @@ Camera preview still uses cv2.imshow.
 import cv2
 import numpy as np
 import customtkinter as ctk
-from vision_config import save_color_ranges
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from host.config import save_color_ranges
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")

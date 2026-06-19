@@ -1,5 +1,0 @@
-# Calibration test A: single straight run
-# Measure from front bumper start line to front bumper end line.
-SPEED:200
-FORWARD:1000
-STOP

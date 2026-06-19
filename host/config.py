@@ -75,3 +75,38 @@ def save_color_ranges(ranges):
     with open(COLOR_RANGES_FILE, 'w') as f:
         json.dump(ranges, f, indent=2)
     print("Calibration saved to: {}".format(COLOR_RANGES_FILE))
+
+
+# ── Control-loop tunables ─────────────────────────────────────────────────────
+ARRIVE_PX       = 35.0   # waypoint counts as reached within this many pixels.
+                         # Must exceed one forward step, or the robot steps PAST a
+                         # waypoint without registering arrival and spins to go back.
+TURN_TOL_DEG    = 12.0   # rotate only for heading errors larger than this. Must
+                         # exceed the EV3 gyro turn's coast/overshoot, or the loop
+                         # limit-cycles (turn past target, correct back, repeat).
+TURN_COMMIT_DEG = 45.0   # after a turn, drive a forward step before turning again
+                         # unless the heading error still exceeds this. Prevents
+                         # turn-turn-turn oscillation from small overshoots.
+# Measured EV3 follow-mode turn response: actual = TURN_SLOPE*commanded + coast.
+# Compensate so a requested heading change actually lands on target:
+#   command = (desired - TURN_COAST_DEG) / TURN_SLOPE
+# Recalibrated from run log (3 observed turns at 45 deg/s):
+#   cmd=104 → actual=108, cmd=61 → actual=63, cmd=156 → actual=158
+#   Best fit: actual ≈ 1.0*cmd + 3  (coast much smaller than original 8 deg)
+TURN_SLOPE      = 1.0
+TURN_COAST_DEG  = 3.0
+MAX_STEP_MM     = 20     # never drive more than this (physical mm) between observations
+                         # CRITICAL: must satisfy MAX_STEP_MM * px_per_mm < ARRIVE_PX
+                         # or the robot overshoots waypoints and spins back (oscillation)
+MIN_STEP_MM     = 10     # smallest forward nudge worth sending
+# robot/main.py executes FORWARD:v as straight(-v / 3.2288), i.e. the command
+# value is ~3.2x the physical mm travelled. Scale the command so a requested
+# physical step actually moves that far (otherwise the robot crawls ~1/3 speed).
+FORWARD_CMD_SCALE      = 3.2288
+MAX_POSE_MISS          = 60     # give up after this many consecutive frames with no marker
+REPLAN_PX              = 150.0  # re-plan when robot is >150px off its target
+REPLAN_EVERY_N         = 8      # also force a replan after every N forward steps
+DENSIFY_GAP_PX         = 30.0   # maximum pixel gap between consecutive waypoints
+GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN
+GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
+BALL_GATE_THRESHOLD_PX = 40     # waypoint is a ball pickup when within this many px
