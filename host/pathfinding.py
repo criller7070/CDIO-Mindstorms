@@ -15,6 +15,7 @@ Coordinate system (image space):
 """
 
 import heapq
+import math
 import cv2
 import numpy as np
 from itertools import permutations
@@ -25,6 +26,11 @@ from itertools import permutations
 # -----------------------------------------------------------------------------
 FIELD_WIDTH_MM = 1670   # field width:  167.0 cm
 FIELD_HEIGHT_MM = 1215  # field height: 121.5 cm
+
+# Straight approach segment injected before each ball pickup.  Must exceed the
+# nose_to_aruco trim distance (248 mm) so the trimmed endpoint lands inside the
+# guaranteed-straight segment and the robot's final approach is always direct.
+BALL_APPROACH_MM = 400
 
 
 class FieldPlanner:
@@ -44,7 +50,8 @@ class FieldPlanner:
                  robot_length_mm=0,
                  pivot_offset_mm=0.0,
                  gate_open=True,
-                 gate_arm_mm=0.0):
+                 gate_arm_mm=0.0,
+                 aruco_from_back_frac=0.5):
         """
         field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
         center_pos:      (cx, cy) pixel coords of center crosshair
@@ -78,6 +85,11 @@ class FieldPlanner:
         self.robot_half_width_px  = (robot_width_mm  / 2.0) * self.px_per_mm
         self.robot_half_length_px = (robot_length_mm / 2.0) * self.px_per_mm
         self.robot_half_length_mm = robot_length_mm / 2.0
+
+        # The nav loop tracks the ArUco marker, not the geometric centre.
+        # To land the nose on a ball, trim back by the ArUco-to-nose distance.
+        nose_to_aruco_mm = robot_length_mm * (1.0 - aruco_from_back_frac)
+        self.nose_to_aruco_px = nose_to_aruco_mm * self.px_per_mm
 
         # Effective lateral half-width including open gate arms.
         gate_extra_px = (gate_arm_mm * self.px_per_mm) if gate_open else 0.0
@@ -297,6 +309,48 @@ class FieldPlanner:
         return assignments
 
     # ------------------------------------------------------------------
+    # Ball pickup routing with straight approach injection
+    # ------------------------------------------------------------------
+
+    def _pickup_seg(self, from_pos, ball_pos):
+        """
+        A* path to ball_pos whose final two points are an exact straight approach.
+
+        Routes the transit via A* to an approach_point BALL_APPROACH_MM before the
+        ball (along the from→ball direction), then appends the exact approach_pt
+        and exact ball_center as the final two points.  These are stored without
+        grid-snapping so _segs_to_commands can preserve them through simplification.
+
+        Falls back to plain A* + exact endpoint if the approach_point is inside an
+        obstacle or the total distance is too short for a separate approach segment.
+        """
+        bx, by = float(ball_pos[0]), float(ball_pos[1])
+        fx, fy = float(from_pos[0]), float(from_pos[1])
+        approach_px = BALL_APPROACH_MM * self.px_per_mm
+
+        dx, dy = bx - fx, by - fy
+        dist = math.hypot(dx, dy)
+
+        if dist > approach_px * 1.1:
+            ux, uy = dx / dist, dy / dist
+            apx = bx - approach_px * ux
+            apy = by - approach_px * uy
+
+            if not self._is_in_obstacle(apx, apy):
+                transit = self.astar((int(fx), int(fy)), (int(apx), int(apy)))
+                if transit is not None:
+                    # Replace grid-snapped transit endpoint with exact approach_pt,
+                    # then append exact ball center.  _segs_to_commands skips RDP
+                    # on these last two points so the straight approach is preserved.
+                    return transit[:-1] + [(apx, apy), (bx, by)]
+
+        # Fallback: plain A* with exact endpoint (fixes grid-snap, no approach guarantee)
+        seg = self.astar((int(fx), int(fy)), (int(bx), int(by)))
+        if seg:
+            seg[-1] = (bx, by)
+        return seg
+
+    # ------------------------------------------------------------------
     # Optimal route (TSP brute-force for ≤ ~8 balls)
     # ------------------------------------------------------------------
 
@@ -331,7 +385,11 @@ class FieldPlanner:
                 for i in range(len(waypoints) - 1):
                     p0 = (int(waypoints[i][0]), int(waypoints[i][1]))
                     p1 = (int(waypoints[i + 1][0]), int(waypoints[i + 1][1]))
-                    seg = self.astar(p0, p1)
+                    is_ball_leg = i < len(waypoints) - 2
+                    if is_ball_leg:
+                        seg = self._pickup_seg(waypoints[i], waypoints[i + 1])
+                    else:
+                        seg = self.astar(p0, p1)
                     if seg is None:
                         ok = False
                         break
@@ -351,8 +409,7 @@ class FieldPlanner:
         while remaining:
             best_idx, best_seg, best_d = None, None, float('inf')
             for idx in remaining:
-                p = (int(ball_positions[idx][0]), int(ball_positions[idx][1]))
-                seg = self.astar((int(cur[0]), int(cur[1])), p)
+                seg = self._pickup_seg(cur, ball_positions[idx])
                 if seg is None:
                     continue
                 d = self._path_length(seg)
@@ -512,11 +569,24 @@ class FieldPlanner:
         commands = []
         driven_segs = []
         n_collect = len(path_segs) - 1
-        half_len_px = self.robot_half_length_mm * self.px_per_mm
+        # Trim so the nose overshoots the ball by ~75 mm.
+        # Measured ArUco-to-nose = 210 mm. Capture zone = 0..90 mm past nose.
+        # T=135 mm → nose at ball + (210-135) = ball + 75 mm.  Mid-capture-zone.
+        TRIM_MM = 135.0
+        half_len_px = TRIM_MM * self.px_per_mm
 
         for leg, seg in enumerate(path_segs):
             is_collect = leg < n_collect
-            pts = self.simplify(seg, eps=8)
+            if is_collect and len(seg) >= 2:
+                # Preserve the last 2 points of collect segs as-is (no RDP).
+                # _pickup_seg stores [exact_approach_pt, exact_ball_center] there,
+                # so the approach direction and endpoint are never altered by
+                # simplification.
+                transit_raw = list(seg[:-2]) if len(seg) > 2 else []
+                transit = self.simplify(transit_raw, eps=8) if transit_raw else []
+                pts = transit + [tuple(seg[-2]), tuple(seg[-1])]
+            else:
+                pts = self.simplify(seg, eps=8)
             if not pts:
                 continue
 

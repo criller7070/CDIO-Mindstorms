@@ -22,13 +22,13 @@ HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
 
 # ── Robot physical dimensions (mm) ────────────────────────────────────────────
 ROBOT_WIDTH_MM  = 240   # side-to-side across tracks
-ROBOT_LENGTH_MM = 370   # front bumper to back
+ROBOT_LENGTH_MM = 320   # front bumper to back (measured: 110 mm rear + 210 mm to front)
 GATE_ARM_MM     = 90    # each gate arm length; when fully open (90°) each side extends this far
 
 # ArUco marker position along the robot's length axis.
-# 0% = rear bumper, 100% = front bumper.  The marker is at 33% from the back,
-# so the geometric centre is (50% - 33%) * LENGTH = ~63 mm FORWARD of the marker.
-ARUCO_FROM_BACK_FRAC = 0.33
+# 0% = rear bumper, 100% = front bumper.
+# Measured: ArUco centre is 110 mm from rear, 210 mm from front → total 320 mm.
+ARUCO_FROM_BACK_FRAC = 0.344   # 110 / 320
 
 # Turn pivot: the robot rotates about a point at 25% of its length from the BACK
 # and 50% of its width (centred between the tracks).  This value is how far that
@@ -131,9 +131,9 @@ HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this
 GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN (ball pickup)
 GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
 GATE_DROPOFF_DEG       = 45     # partial-open at dropoff: lets balls roll out without jamming walls
-BALL_GATE_THRESHOLD_PX = 80     # waypoint is a ball pickup when within this many px
-                                 # must exceed half-length trim offset (~66px) or gate
-                                 # never fires for trimmed ball waypoints
+BALL_GATE_THRESHOLD_PX = 50     # waypoint is a ball pickup when within this many px
+                                 # must exceed trim offset (135mm=47px) but be small
+                                 # enough to not fire at non-ball waypoints near balls
 CENTER_OBSTACLE_EXTRA_PX = 10   # extra px added to X obstacle radius before A*
                                  # _build_grid already adds robot_half_width_px (~42px),
                                  # so keep this small — 10px compensates camera underestimate

@@ -93,6 +93,7 @@ def plan_waypoints(detector, frame, robot_pos):
         pivot_offset_mm=ROBOT_PIVOT_OFFSET_MM,
         gate_open=True,
         gate_arm_mm=GATE_ARM_MM,
+        aruco_from_back_frac=ARUCO_FROM_BACK_FRAC,
     )
     print("Footprint: half_w={:.0f}px  half_l={:.0f}px  eff_w={:.0f}px  center_clr={:.0f}px".format(
         planner.robot_half_width_px, planner.robot_half_length_px,
@@ -768,15 +769,16 @@ def main():
     elif "--plan-only" in args:
         run_plan_only(camera_index)
     else:
+        no_restart = "--no-restart" in args
         if "--profile" in args:
             ip = _load_profile(args[args.index("--profile") + 1])
-            if not _restart_robot(ip):
+            if not no_restart and not _restart_robot(ip):
                 return
             link = TCPLink(ip, 9999, timeout=60.0)
         elif "--tcp" in args:
             spec = args[args.index("--tcp") + 1]
             host, _, port = spec.partition(":")
-            if not _restart_robot(host):
+            if not no_restart and not _restart_robot(host):
                 return
             link = TCPLink(host, int(port) if port else 9999, timeout=60.0)
         else:
