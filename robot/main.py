@@ -79,17 +79,21 @@ class EV3NavController:
             self.lift_motor = None
             print("[DEBUG] Port C lift motor not found, skipping lift commands")
 
-        # Test port D (gate) 
+        # Test port D (gate)
         try:
             self.gate_motor = Motor(Port.D)
             print("[OK] Port D gate motor found")
         except Exception as e:
             self.gate_motor = None
-            print("[DEBUG] Port D gate motor not found, skipping gate commands")    
-        
-        # Try DriveBase with minimal parameters
+            print("[DEBUG] Port D gate motor not found, skipping gate commands")
+
+        if self.gate_motor:
+            angle = self.gate_motor.angle()
+            self.gate_motor.reset_angle(0)
+            print("[OK] Gate motor angle reset (was {}deg)".format(angle))
+
+
         try:
-            # not working idk why
             self.robot = DriveBase(
                 self.left_motor,
                 self.right_motor,
@@ -100,19 +104,36 @@ class EV3NavController:
             self.ev3.screen.clear()
             self.ev3.screen.print("Ready")
         except Exception as e:
-            print("[ERROR] DriveBase failed: {}".format(str(e)))
-            print("Trying without gyro...")
-            # Fallback: use motors directly without DriveBase
+            print("[DEBUG] DriveBase unavailable ({}), using motor.run_angle".format(str(e)))
             self.robot = None
-            self.ev3.screen.clear()
-            self.ev3.screen.print("Motor Mode")
-        
+
+        # Motor self-test: spin each drive motor both directions, verify encoder responds
+        for name, motor in [("A", self.left_motor), ("B", self.right_motor)]:
+            results = []
+            for deg, label in [(180, "fwd"), (-180, "rev")]:
+                before = motor.angle()
+                try:
+                    motor.run_angle(200, abs(deg), wait=True)
+                except Exception as e:
+                    results.append("{}:ERR({})".format(label, str(e)[:15]))
+                    continue
+                moved = abs(motor.angle() - before)
+                if moved < 90:
+                    results.append("{}:STALL({}deg)".format(label, moved))
+                else:
+                    results.append("{}:OK({}deg)".format(label, moved))
+            motor.stop()
+            status = ", ".join(results)
+            if "STALL" in status or "ERR" in status:
+                print("[WARN] Motor {} self-test FAILED: {}".format(name, status))
+            else:
+                print("[OK] Motor {} self-test: {}".format(name, status))
+
         # Try to initialize gyro sensor for accurate turning (Port 1)
         try:
             self.gyro = GyroSensor(Port.S1)
-            # Read once to confirm it's really a responsive gyro, not just a port
-            start_angle = self.gyro.angle()
-            print("[OK] Gyro sensor on Port.S1 (angle={})".format(start_angle))
+            self.gyro.reset_angle(0)
+            print("[OK] Gyro sensor on Port.S1")
         except Exception as e:
             self.gyro = None
             print("[DEBUG] Gyro sensor not found or failed ({}); using default turning".format(str(e)[:30]))
@@ -120,12 +141,15 @@ class EV3NavController:
         self.forward_speed = FORWARD_SPEED
         self.turn_speed = TURN_SPEED
         self.lift_speed = LIFT_SPEED
-        
+
         self.commands_executed = 0
         self.commands_failed = 0
         self.mission_start_time = None
         self.last_command_time = None
-        
+
+        batt_mv = self.ev3.battery.voltage()
+        print("[BATT] {:.2f}V".format(batt_mv / 1000.0))
+
         self._log("Motor initialization complete")
         self.ev3.speaker.say("Ready")
         self.ev3.light.on(Color.GREEN)
@@ -179,13 +203,24 @@ class EV3NavController:
             if cmd == "FORWARD":
                 if value > 0:
                     self._log("FWD {} mm".format(value))
-                    if self.robot:
-                        self.robot.straight(-value / FORWARD_DRIVEBASE_SCALE)
-                    else:
-                        # Fallback: drive both motors in parallel
-                        rotations = (value * 360) // FORWARD_MM_PER_ROTATION
+                    rotations = (value * 360) // FORWARD_MM_PER_ROTATION
+                    enc_l0 = self.left_motor.angle()
+                    enc_r0 = self.right_motor.angle()
+                    try:
                         self.left_motor.run_angle(-self.forward_speed, rotations, wait=False)
                         self.right_motor.run_angle(-self.forward_speed, rotations, wait=True)
+                    except OSError as e:
+                        print("[FWD] OSError {}, resetting motors".format(e))
+                        self.left_motor.stop()
+                        self.right_motor.stop()
+                        time.sleep(0.2)
+                        self.left_motor.run_angle(-self.forward_speed, rotations, wait=False)
+                        self.right_motor.run_angle(-self.forward_speed, rotations, wait=True)
+                    enc_l1 = self.left_motor.angle()
+                    enc_r1 = self.right_motor.angle()
+                    print("[FWD] enc L:{}->{} ({}) R:{}->{} ({}) cmd_rot={}".format(
+                        enc_l0, enc_l1, enc_l1 - enc_l0,
+                        enc_r0, enc_r1, enc_r1 - enc_r0, rotations))
                     self.commands_executed += 1
                     cmd_time = time.time() - cmd_start_time
                     self._log("OK ({:.1f}s)".format(cmd_time))
@@ -193,17 +228,20 @@ class EV3NavController:
                     self._log("Bad distance: {}".format(value))
                     self.commands_failed += 1
                     return False
-            
+
             elif cmd == "REVERSE":
                 if value > 0:
                     self._log("REV {} mm".format(value))
-                    if self.robot:
-                        self.robot.straight(value)
-                    else:
-                        # Fallback: reverse both motors in parallel
-                        rotations = (value * 360) // REVERSE_MM_PER_ROTATION
-                        self.left_motor.run_angle(self.forward_speed, rotations, wait=False)
-                        self.right_motor.run_angle(self.forward_speed, rotations, wait=True)
+                    rotations = (value * 360) // REVERSE_MM_PER_ROTATION
+                    enc_l0 = self.left_motor.angle()
+                    enc_r0 = self.right_motor.angle()
+                    self.left_motor.run_angle(self.forward_speed, rotations, wait=False)
+                    self.right_motor.run_angle(self.forward_speed, rotations, wait=True)
+                    enc_l1 = self.left_motor.angle()
+                    enc_r1 = self.right_motor.angle()
+                    print("[REV] enc L:{}->{} ({}) R:{}->{} ({}) cmd_rot={}".format(
+                        enc_l0, enc_l1, enc_l1 - enc_l0,
+                        enc_r0, enc_r1, enc_r1 - enc_r0, rotations))
                     self.commands_executed += 1
                     cmd_time = time.time() - cmd_start_time
                     self._log("OK ({:.1f}s)".format(cmd_time))
@@ -216,43 +254,59 @@ class EV3NavController:
                 if value != 0:
                     self._log("TURN {} deg".format(value))
                     if self.gyro and self.robot:
-                        BRAKE_OFFSET = GYRO_BRAKE_OFFSET
+                        gyro_before = self.gyro.angle()
+                        self.gyro.reset_angle(0)
                         target = abs(value)
-                        effective = target - BRAKE_OFFSET
-                        print("[TURN] requested={} deg | stopping at={} deg (brake offset={})".format(value, effective, BRAKE_OFFSET))
-                        initial = self.gyro.angle()
-                        rate = self.turn_speed if value > 0 else -self.turn_speed
+                        print("[TURN] gyro CL target={} gyro_before={}".format(value, gyro_before))
                         last_logged = 0
-                        while True:
-                            current = self.gyro.angle()
-                            if current == -32768:
-                                self.robot.drive(0, rate)
-                                continue
-                            traveled = abs(current - initial)
-                            if traveled >= effective:
+                        t0 = time.time()
+                        timeout = max(target / 10.0, 1.0) * 3.0 + 3.0
+                        self.left_motor.stop()
+                        self.right_motor.stop()
+                        enc_l0 = self.left_motor.angle()
+                        enc_r0 = self.right_motor.angle()
+                        try:
+                            if value > 0:
+                                self.left_motor.run(self.turn_speed)
+                                self.right_motor.run(-self.turn_speed)
+                            else:
+                                self.left_motor.run(-self.turn_speed)
+                                self.right_motor.run(self.turn_speed)
+                        except OSError as e:
+                            print("[TURN] OSError {}, resetting motors".format(e))
+                            self.left_motor.stop()
+                            self.right_motor.stop()
+                            time.sleep(0.2)
+                            if value > 0:
+                                self.left_motor.run(self.turn_speed)
+                                self.right_motor.run(-self.turn_speed)
+                            else:
+                                self.left_motor.run(-self.turn_speed)
+                                self.right_motor.run(self.turn_speed)
+                        while abs(self.gyro.angle()) < target - GYRO_BRAKE_OFFSET:
+                            if time.time() - t0 > timeout:
+                                print("[TURN] TIMEOUT gyro={} target={}".format(
+                                    self.gyro.angle(), target))
                                 break
-                            self.robot.drive(0, rate)
-                            if traveled - last_logged >= 30:
-                                print("[TURN] traveled={}/{} deg (gyro={})".format(traveled, effective, current))
+                            traveled = abs(self.gyro.angle())
+                            if traveled - last_logged >= 5:
+                                print("[TURN] gyro={}".format(self.gyro.angle()))
                                 last_logged = traveled
-                        self.robot.stop()
-                        final = abs(self.gyro.angle() - initial)
-                        print("[TURN] done | requested={} deg | gyro traveled={} deg | drift={}".format(target, final, final - target))
-                    elif self.robot:
-                        # Calibrated: TURN:360 → 390 physical degrees at 360, so 360×(360/390)=332
-                        scaled = int(round(value * DRIVEBASE_TURN_SCALE))
-                        self.robot.turn(scaled)
+                        self.left_motor.stop()
+                        self.right_motor.stop()
+                        enc_l1 = self.left_motor.angle()
+                        enc_r1 = self.right_motor.angle()
+                        t_elapsed = time.time() - t0
+                        overshoot = abs(self.gyro.angle()) - target
+                        print("[TURN] done gyro={} target={} overshoot={} enc_L={} enc_R={} t={:.1f}s".format(
+                            self.gyro.angle(), value, overshoot,
+                            enc_l1 - enc_l0, enc_r1 - enc_r0, t_elapsed))
                     else:
-                        # Fallback: tank turn (both motors opposite directions in parallel)
-                        # For continuous track, rotate both wheels in opposite directions
-                        # Calibrated: 47 DriveBase degrees = 90 physical degrees
                         motor_angle = int(round(abs(value) * FALLBACK_TURN_RATIO))
                         if value > 0:
-                            # Turn right: left forward, right backward
                             self.left_motor.run_angle(self.turn_speed, motor_angle, wait=False)
                             self.right_motor.run_angle(-self.turn_speed, motor_angle, wait=True)
                         else:
-                            # Turn left: left backward, right forward
                             self.left_motor.run_angle(-self.turn_speed, motor_angle, wait=False)
                             self.right_motor.run_angle(self.turn_speed, motor_angle, wait=True)
                     self.commands_executed += 1
@@ -379,7 +433,12 @@ class EV3NavController:
             elif cmd == "GATE_OPEN":
                 if self.gate_motor:
                     self._log("GATE OPEN {} deg".format(value))
-                    self.gate_motor.run_angle(-GATE_SPEED, value)
+                    try:
+                        self.gate_motor.run_angle(-GATE_SPEED, value)
+                    except Exception as e:
+                        self._log("Gate open error: {}".format(e))
+                        self.commands_failed += 1
+                        return False
                     self.commands_executed += 1
                     return True
                 else:
@@ -390,7 +449,12 @@ class EV3NavController:
             elif cmd == "GATE_CLOSE":
                 if self.gate_motor:
                     self._log("GATE CLOSE {} deg".format(value))
-                    self.gate_motor.run_angle(GATE_SPEED, value)
+                    try:
+                        self.gate_motor.run_angle(GATE_SPEED, value)
+                    except Exception as e:
+                        self._log("Gate close error: {}".format(e))
+                        self.commands_failed += 1
+                        return False
                     self.commands_executed += 1
                     return True
                 else:
@@ -446,6 +510,8 @@ class EV3NavController:
         self.ev3.screen.print("Follow mode")
         self.ev3.speaker.say("Follow mode")
         self.ev3.light.on(Color.GREEN)
+
+        self.turn_speed = 300
         self._log("Follow loop ready")
 
         # Seed the ack file so a stale value can't be mistaken for a real one.

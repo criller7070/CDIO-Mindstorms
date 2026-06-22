@@ -1,9 +1,0 @@
-# Swapped test for gate and movement
-SPEED:200
-GATE_CLOSE:90
-REVERSE:100
-STOP
-GATE_OPEN:90
-STOP
-LIFT_UP:45
-STOP

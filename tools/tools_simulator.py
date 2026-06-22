@@ -20,14 +20,20 @@ import math
 import time
 import cv2
 import numpy as np
+import customtkinter as ctk
 
-from vision_config import (
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from host.config import (
     MISSION_FILE,
     INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
     ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
 )
-from tools_path_planner import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
+from host.pathfinding import FIELD_WIDTH_MM, FIELD_HEIGHT_MM
 
 # ── Display layout ────────────────────────────────────────────────────────────
 CANVAS_W   = 1050
@@ -150,19 +156,12 @@ class Simulator:
                 (cy - self.oy) / self.scale)
 
     def _compute_layout(self):
-        """Size the canvas to the field at the current scale, plus side panel.
-
-        The field is rendered at exactly self.scale (px/mm); the canvas grows
-        to fit it.  A minimum height keeps the command panel readable.
-        """
         field_w_px = FIELD_WIDTH_MM * self.scale
         field_h_px = FIELD_HEIGHT_MM * self.scale
-        self.canvas_w = int(max(field_w_px + SIDE_W + 2 * FIELD_PAD, 640))
-        self.canvas_h = int(max(field_h_px + 2 * FIELD_PAD + 30, 700))
+        self.canvas_w = int(max(field_w_px + 2 * FIELD_PAD, 400))
+        self.canvas_h = int(max(field_h_px + 2 * FIELD_PAD, 400))
         self.ox = float(FIELD_PAD)
-        # Centre the field vertically in the area above the status bar
-        usable_h = self.canvas_h - 30
-        self.oy = max(float(FIELD_PAD), (usable_h - field_h_px) / 2.0)
+        self.oy = max(float(FIELD_PAD), (self.canvas_h - field_h_px) / 2.0)
 
     # ── Simulation ────────────────────────────────────────────────────────────
 
@@ -277,8 +276,6 @@ class Simulator:
         self._draw_path(canvas)
         self._draw_events(canvas)
         self._draw_robot(canvas)
-        self._draw_panel(canvas)
-        self._draw_status(canvas)
 
         return canvas
 
@@ -381,82 +378,151 @@ class Simulator:
         cv2.circle(canvas, (ppx, ppy), 4, (0, 200, 255), -1)
         cv2.circle(canvas, (ppx, ppy), 4, (0, 0, 0), 1)
 
-    def _draw_panel(self, canvas):
-        panel_x = self.canvas_w - SIDE_W
-        cv2.rectangle(canvas, (panel_x, 0), (self.canvas_w, self.canvas_h - 30), (18, 18, 18), -1)
-        cv2.line(canvas, (panel_x, 0), (panel_x, self.canvas_h), (55, 55, 55), 1)
-
-        cv2.putText(canvas, "COMMANDS  ({}/{})".format(
-            self.step_idx, len(self.positions) - 1),
-            (panel_x + 6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, C_HI, 1)
-
-        visible  = 28
-        half     = visible // 2
-        last_exe = self.step_idx - 1   # index of last executed command
-        start    = max(0, last_exe - half + 1)
-        end      = min(len(self.commands), start + visible)
-
-        for row, i in enumerate(range(start, end)):
-            cmd, val = self.commands[i]
-            ry = 30 + row * 23
-
-            # Build display text
-            if cmd == 'COMMENT':
-                text  = (val or '#')[:30]
-                color = C_COMMENT
-            elif val is not None:
-                iv    = int(val) if val == int(val) else val
-                text  = "{}:{}".format(cmd, iv)
-                color = C_TEXT
-            else:
-                text  = cmd
-                color = C_TEXT
-
-            # Colour coding
-            if cmd == 'LIFT_DOWN':
-                color = C_COLLECT
-            elif cmd == 'LIFT_UP':
-                color = (0, 180, 120)
-            elif cmd == 'STOP':
-                color = (80, 80, 200)
-
-            # Highlight last executed
-            if i == last_exe:
-                cv2.rectangle(canvas,
-                               (panel_x + 2, ry - 2),
-                               (self.canvas_w - 2, ry + 18),
-                               (35, 55, 35), -1)
-                color = C_HI
-
-            cv2.putText(canvas, text, (panel_x + 8, ry + 14),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
-
-    def _draw_status(self, canvas):
-        cv2.rectangle(canvas, (0, self.canvas_h - 30), (self.canvas_w, self.canvas_h), (18, 18, 18), -1)
-        cv2.line(canvas, (0, self.canvas_h - 30), (self.canvas_w, self.canvas_h - 30), (55, 55, 55), 1)
-
-        speed_fps = int(round(1.0 / max(self.anim_speed, 0.001)))
-        anim_txt  = "PLAYING  {}/s".format(speed_fps) if self.animating else "PAUSED"
-        status    = ("SPACE=step  BKSP=back  A=play  E=end  0=start  +/-=speed  "
-                     "R=reload  Q=quit  |  {}".format(anim_txt))
-        cv2.putText(canvas, status, (6, self.canvas_h - 9),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, C_TEXT, 1)
-
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def run(self):
-        print("Command Simulator")
-        print("=" * 50)
-        print("  SPACE        : step forward one command")
-        print("  BACKSPACE    : step back one command")
-        print("  A            : toggle animation")
-        print("  E            : jump to end (full path)")
-        print("  0            : jump to start")
-        print("  + / -        : animation speed")
-        print("  R            : reload commands.txt")
-        print("  Left-click   : set robot start position")
-        print("  Q            : quit")
-        print()
+        root = ctk.CTk()
+        root.title("Simulator Controls")
+        root.resizable(False, False)
+
+        step_label = ctk.CTkLabel(root,
+                                  text="Commands (0/0)",
+                                  font=ctk.CTkFont(size=14, weight='bold'),
+                                  text_color="#D0D0D0")
+        step_label.pack(pady=(14, 4), padx=14)
+
+        cmd_box = ctk.CTkTextbox(root, width=260, height=560,
+                                 font=ctk.CTkFont(family='Courier', size=11),
+                                 wrap='none')
+        cmd_box.pack(padx=12, pady=4)
+        cmd_box.configure(state='disabled')
+        _tb = cmd_box._textbox
+        _tb.tag_config('hi',      foreground='#FFFF00', background='#1A2B1A')
+        _tb.tag_config('collect', foreground='#FF8C00')
+        _tb.tag_config('liftup',  foreground='#78B400')
+        _tb.tag_config('stop',    foreground='#C85050')
+        _tb.tag_config('comment', foreground='#6E6E37')
+        _tb.tag_config('normal',  foreground='#D2D2D2')
+
+        anim_label = ctk.CTkLabel(root, text='PAUSED',
+                                  font=ctk.CTkFont(size=12),
+                                  text_color='gray')
+        anim_label.pack(pady=(2, 0))
+
+        hint_label = ctk.CTkLabel(
+            root,
+            text='SPC/→ step  ←/⌫ back  A play  E end\n'
+                 '0 start  +/− speed  R reload  Q quit\n'
+                 'Left-click canvas to set start',
+            font=ctk.CTkFont(size=10),
+            text_color='#606060')
+        hint_label.pack(pady=(4, 14))
+
+        running = [True]
+
+        def _update_cmdlist():
+            last_exe = self.step_idx - 1
+            start    = max(0, last_exe - 14 + 1)
+            end      = min(len(self.commands), start + 28)
+            cmd_box.configure(state='normal')
+            cmd_box.delete('1.0', 'end')
+            for i in range(start, end):
+                cmd, val = self.commands[i]
+                if cmd == 'COMMENT':
+                    line = (val or '#')[:38]
+                    tag  = 'comment'
+                elif val is not None:
+                    iv   = int(val) if isinstance(val, float) and val == int(val) else val
+                    line = '{}:{}'.format(cmd, iv)
+                    tag  = 'normal'
+                else:
+                    line = cmd
+                    tag  = 'normal'
+                if cmd == 'LIFT_DOWN': tag = 'collect'
+                elif cmd == 'LIFT_UP': tag = 'liftup'
+                elif cmd == 'STOP':    tag = 'stop'
+                if i == last_exe:      tag = 'hi'
+                cmd_box.insert('end', line + '\n', tag)
+            cmd_box.configure(state='disabled')
+
+        def tick():
+            if not running[0]:
+                return
+            if self.animating:
+                now = time.time()
+                if now - self._last_anim >= self.anim_speed:
+                    self._last_anim = now
+                    if self.step_idx < len(self.positions) - 1:
+                        self.step_idx += 1
+                    else:
+                        self.animating = False
+
+            step_label.configure(text='Commands ({}/{})'.format(
+                self.step_idx, len(self.positions) - 1))
+            if self.animating:
+                fps = int(round(1.0 / max(self.anim_speed, 0.001)))
+                anim_label.configure(text='PLAYING  {}/s'.format(fps),
+                                     text_color='#78B400')
+            else:
+                anim_label.configure(text='PAUSED', text_color='gray')
+
+            _update_cmdlist()
+            cv2.imshow('Simulator', self.draw())
+            cv2.waitKey(1)
+            root.after(16, tick)
+
+        def _quit(*_):
+            running[0] = False
+            root.destroy()
+
+        def _step_fwd(*_):
+            self.animating = False
+            self.step_idx  = min(self.step_idx + 1, len(self.positions) - 1)
+
+        def _step_back(*_):
+            self.animating = False
+            self.step_idx  = max(self.step_idx - 1, 0)
+
+        def _toggle_anim(*_):
+            self.animating  = not self.animating
+            self._last_anim = time.time()
+
+        def _go_end(*_):
+            self.animating = False
+            self.step_idx  = len(self.positions) - 1
+
+        def _go_start(*_):
+            self.animating = False
+            self.step_idx  = 0
+
+        def _faster(*_):
+            self.anim_speed = max(0.01, self.anim_speed - 0.01)
+
+        def _slower(*_):
+            self.anim_speed = min(2.0, self.anim_speed + 0.02)
+
+        def _reload(*_):
+            self.reload()
+            print("Reloaded: {}".format(self.mission_file))
+
+        root.protocol('WM_DELETE_WINDOW', _quit)
+        root.bind('<space>',    _step_fwd)
+        root.bind('<Right>',    _step_fwd)
+        root.bind('<BackSpace>', _step_back)
+        root.bind('<Left>',     _step_back)
+        root.bind('<a>',        _toggle_anim)
+        root.bind('<A>',        _toggle_anim)
+        root.bind('<e>',        _go_end)
+        root.bind('<E>',        _go_end)
+        root.bind('0',          _go_start)
+        root.bind('<Home>',     _go_start)
+        root.bind('<plus>',     _faster)
+        root.bind('<equal>',    _faster)
+        root.bind('<minus>',    _slower)
+        root.bind('<r>',        _reload)
+        root.bind('<R>',        _reload)
+        root.bind('<q>',        _quit)
+        root.bind('<Q>',        _quit)
 
         def on_mouse(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDOWN:
@@ -469,49 +535,9 @@ class Simulator:
         cv2.namedWindow('Simulator')
         cv2.setMouseCallback('Simulator', on_mouse)
 
-        while True:
-            # Animation tick
-            if self.animating:
-                now = time.time()
-                if now - self._last_anim >= self.anim_speed:
-                    self._last_anim = now
-                    if self.step_idx < len(self.positions) - 1:
-                        self.step_idx += 1
-                    else:
-                        self.animating = False
-
-            cv2.imshow('Simulator', self.draw())
-
-            key = cv2.waitKey(16)   # ~60 fps refresh
-            ch  = key & 0xFF
-
-            if ch == ord('q'):
-                break
-            elif ch == ord(' ') or key == 2555904:   # SPACE or RIGHT arrow
-                self.animating = False
-                self.step_idx  = min(self.step_idx + 1, len(self.positions) - 1)
-            elif ch == 8 or key == 2424832:          # BACKSPACE or LEFT arrow
-                self.animating = False
-                self.step_idx  = max(self.step_idx - 1, 0)
-            elif ch == ord('a'):
-                self.animating    = not self.animating
-                self._last_anim   = time.time()
-            elif ch == ord('e'):
-                self.animating = False
-                self.step_idx  = len(self.positions) - 1
-            elif ch in (ord('0'), 36):               # '0' or Home
-                self.animating = False
-                self.step_idx  = 0
-            elif ch in (ord('+'), ord('=')):
-                self.anim_speed = max(0.01, self.anim_speed - 0.01)
-                print("Speed: {:.0f} steps/s".format(1.0 / self.anim_speed))
-            elif ch == ord('-'):
-                self.anim_speed = min(2.0, self.anim_speed + 0.02)
-                print("Speed: {:.0f} steps/s".format(1.0 / self.anim_speed))
-            elif ch == ord('r'):
-                self.reload()
-                print("Reloaded: {}".format(self.mission_file))
-
+        root.after(16, tick)
+        root.mainloop()
+        running[0] = False
         cv2.destroyAllWindows()
 
 
