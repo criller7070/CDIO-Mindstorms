@@ -25,7 +25,7 @@ from config import (
     CAMERA_INDEX, MISSION_FILE, SCREENSHOT_DIR, MASK_DIR,
     WALL_MARGIN, CENTER_RADIUS, INITIAL_HEADING_DEG,
     HOLE_FRAC_X, HOLE_FRAC_Y,
-    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM,
+    ROBOT_WIDTH_MM, ROBOT_LENGTH_MM, ROBOT_PIVOT_OFFSET_MM, GATE_ARM_MM,
     ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
     load_color_ranges,
 )
@@ -441,6 +441,8 @@ class VisionApp:
             robot_width_mm=ROBOT_WIDTH_MM,
             robot_length_mm=ROBOT_LENGTH_MM,
             pivot_offset_mm=ROBOT_PIVOT_OFFSET_MM,
+            gate_open=True,
+            gate_arm_mm=GATE_ARM_MM,
         )
 
         # Snap to nearest navigable cell so display and path endpoint match exactly

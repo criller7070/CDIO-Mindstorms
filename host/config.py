@@ -23,6 +23,12 @@ HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
 # ── Robot physical dimensions (mm) ────────────────────────────────────────────
 ROBOT_WIDTH_MM  = 240   # side-to-side across tracks
 ROBOT_LENGTH_MM = 370   # front bumper to back
+GATE_ARM_MM     = 90    # each gate arm length; when fully open (90°) each side extends this far
+
+# ArUco marker position along the robot's length axis.
+# 0% = rear bumper, 100% = front bumper.  The marker is at 33% from the back,
+# so the geometric centre is (50% - 33%) * LENGTH = ~63 mm FORWARD of the marker.
+ARUCO_FROM_BACK_FRAC = 0.33
 
 # Turn pivot: the robot rotates about a point at 25% of its length from the BACK
 # and 50% of its width (centred between the tracks).  This value is how far that

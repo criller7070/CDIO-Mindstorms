@@ -1,14 +1,30 @@
 # Contributing & Project Structure
 
+## Robot IP / Network Profiles
+
+Robot IPs are stored in `robot_profiles.env` at the repo root:
+```
+home=192.168.2.13
+school=10.56.138.36
+```
+Add a new line whenever the IP changes on a new network.
+
+Pass `--profile <name>` to `loop.py` instead of a raw IP:
+```bash
+python3 loop.py --profile home --camera 1
+python3 loop.py --profile school --camera 1
+```
+`--tcp <ip>` still works as before if you need a one-off address.
+
 ## Quick Start (open-loop mission)
 ```
-ssh robot@10.56.138.36
+ssh robot@192.168.2.13
 cd ~/CDIO-Mindstorms/robot/
 brickrun -r -- pybricks-micropython main.py
 ```
 
 ## TODO
-- Pathfinding currently treats the robot as a point, but it has real dimensions (width, length, and the doors/gates sticking out at certain angles). This means paths that look clear on paper can clip the wall, the cross, or other obstacles in practice, especially in tight corners or near the dropoff hole. The pathfinder needs to account for the robot's full footprint (and gate state, since open gates change the effective footprint) when checking for collisions, not just the centerpoint. Ideas to explore: inflate obstacles by half the robot's width/length as a simple first pass, or model the robot as a proper polygon/rectangle for collision checks if more precision is needed.
+- [DONE] Pathfinding robot footprint: obstacles are now inflated by the robot's effective half-width (including open gate arms, 90mm each side) for walls, and by max(effective_half_width, half_length) for the center cross so approach angle doesn't matter. `gate_open` / `gate_arm_mm` parameters on `FieldPlanner` let the caller switch footprint based on gate state. Walls, hull polygon, and center cross all use the updated clearance.
 
 - The doors are currently open the entire time the robot is moving, but they should only open right before a ball pickup. Keeping them open in transit causes two problems: balls already in the tray can fall out while driving, and the open doors can collide with the wall or other obstacles in narrow spaces. Doors should default to closed during travel and only open in the brief window right before/during a pickup maneuver, then close again immediately after. Need to define what "right before pickup" means precisely (e.g. triggered by proximity to the ball / arrival at the pickup waypoint) so the timing isn't too early or too late.
 
@@ -16,11 +32,15 @@ brickrun -r -- pybricks-micropython main.py
 
 - Dropoff part 2: The tray needs to be lifted when dropoff has been [triggered/completed]. The lift should be about 45 degrees, just to tip the tray but not enough to lift it. The 45-degree tip should be enough to let balls roll out into the hole under gravity without the tray going so high that the tray tips on its side. Need to define the trigger condition for when the lift happens (e.g. once the robot has confirmed it's stopped inside/at the hole, perpendicular and gates positioned correctly), and make sure the lift motion itself doesn't push the robot off its aligned position.
 
-- The robot should not touch neither the wall nor the cross in the middle. This is a general safety/collision constraint that ties into the pathfinding footprint issue above — both the wall boundary and the center cross need to be treated as hard obstacles with some margin, not just lines to path around exactly. Worth checking whether current near-wall maneuvers (like the dropoff approach and wall-adjacent ball pickups) leave any margin at all, or whether they rely on the robot stopping exactly in time.
+- [DONE] Robot not touching wall or cross: wall keepout now includes effective half-width (body + gate arms), center cross keepout uses max(half_width_with_gates, half_length) so the body clears from any approach direction. See pathfinding.py `_build_grid` and `center_clearance_px`.
 
 - Balls near the wall need to be accessed the same way as the drop-off logic, meaning perpendicular to the wall, with the robot facing the wall. Right now wall-adjacent pickups likely use the same generic approach logic as open-field pickups, which doesn't account for the wall being there. These pickups need the same "already perpendicular before arrival" behavior as the dropoff fix, plus probably the same kind of footprint/clearance awareness so the robot doesn't clip the wall while turning in to grab the ball.
 
 - Waypoint heading correction needs to be smarter. Right now a waypoint just stores a target heading, and the robot drives to the checkpoint position first, then checks afterward whether its heading is off and corrects it as a separate step. This reactive, post-arrival correction is unreliable and sometimes leaves the robot not facing the correct direction. Heading needs to be reached *during* the approach, not fixed up after the fact — same root issue as the dropoff perpendicularity problem above, so a fix here likely helps that too. Ideas to explore: interpolate heading along the final approach segment so the robot is already rotating into position as it arrives, rather than treating position-arrival and heading-correction as two sequential steps; consider separate tolerances for position vs. heading so arrival can require both to be satisfied at once instead of triggering a late correction; check whether current tolerance/threshold values are causing correction to kick in too late or stop too early.
+
+- The path generation is not accurate enough when creating waypoints toward balls, causing the robot to miss pickups. The system already correctly computes a pickup point offset in front of each ball, but the waypoint that gets placed in the actual path does not land precisely enough on that point. Small errors in how the path planner places or connects waypoints mean the robot ends up approaching from a slightly wrong position or angle, which is enough to miss the ball since the pickup gate has a narrow margin for error. This is visible in the current field state: the planned path polygon passes close to each ball's pickup point but not exactly through it. The fix needs to happen at path generation time — the waypoint placed for each ball pickup must be exactly the computed offset pickup point, with no rounding, snapping, or smoothing applied that would shift it away from the precise coordinate. Also worth checking whether the path planner is cutting corners between waypoints (e.g. a smoothing or shortcutting step) that pulls the final approach line away from the exact pickup point before the robot gets there.
+
+- Increase the Roboflow API call rate from once per second to 4 times per second (every 250ms). The current rate is artificially low and we have sufficient API usage available to increase it. More frequent detections means the robot is working from fresher ball positions, which directly helps pathing accuracy.
 
 ## Future Work
 - Remove the HoughCircles fallback in detection.py. The system currently falls back to HoughCircles when inference-sdk (Roboflow YOLO) is not installed. HoughCircles is unreliable and not the intended detector — the fallback masks missing dependencies instead of failing loudly. Remove it and require inference-sdk. Note: inference-sdk currently has no release compatible with Python 3.14 (all versions cap at <3.13), so the Python version may also need to be addressed.

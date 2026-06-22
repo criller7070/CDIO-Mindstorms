@@ -62,11 +62,13 @@ class TCPLink:
 
     def _send_wait(self, payload, token):
         import socket
+        t_send = time.time()
         try:
             self.sock.sendall(payload.encode("utf-8"))
         except OSError as e:
             print("TCP send failed: {}".format(e))
             return False
+        t_sent = time.time()
         self.sock.settimeout(self.timeout)
         buf = ""
         deadline = time.time() + self.timeout
@@ -80,6 +82,11 @@ class TCPLink:
                 return False
             buf += data.decode("utf-8", errors="ignore")
             if token in buf:
+                t_done = time.time()
+                cmd = payload.strip()
+                if cmd not in ("PING", "STOP"):
+                    print("[TCP] {} send={:.3f}s exec={:.3f}s total={:.3f}s".format(
+                        cmd, t_sent - t_send, t_done - t_sent, t_done - t_send))
                 return True
             if "TIMEOUT" in buf:
                 print("Robot reported TIMEOUT on: {}".format(payload.strip()))

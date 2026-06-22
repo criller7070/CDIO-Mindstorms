@@ -55,6 +55,8 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             misses += 1
             if misses == 1:
                 link.send_and_wait("STOP")
+            if misses % 5 == 0 or misses == MAX_POSE_MISS:
+                print("[MISS {}/{}] robot marker not visible".format(misses, MAX_POSE_MISS))
             if misses >= MAX_POSE_MISS:
                 print("Lost the robot marker for too long — aborting.")
                 return False
@@ -149,11 +151,23 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             just_turned = False
             fwd_steps += 1
 
+        print("[NAV] brg={:.0f}deg head={:.0f}deg err={:.0f}deg move_err={:.0f}deg dist={:.0f}px -> {}".format(
+            bearing, heading, err, move_err, dist, cmd))
         if on_step:
             on_step(pose, waypoints[idx], idx, cmd, len(waypoints))
+        t_send = time.time()
         if not link.send_and_wait(cmd):
             print("No ack for {} — aborting.".format(cmd))
             return False
+        elapsed = time.time() - t_send
+        after = get_pose()
+        if after is not None:
+            d_head = (after[2] - heading + 180.0) % 360.0 - 180.0
+            d_dist = math.hypot(after[0] - x, after[1] - y)
+            print("[ACK {:.1f}s] pose=({:.0f},{:.0f},{:.0f}deg) dhead={:.0f}deg dpos={:.0f}px".format(
+                elapsed, after[0], after[1], after[2], d_head, d_dist))
+        else:
+            print("[ACK {:.1f}s] pose lost after cmd".format(elapsed))
 
         is_forward_move = cmd.startswith("FORWARD") or cmd.startswith("REVERSE")
         if (is_forward_move and replan is not None

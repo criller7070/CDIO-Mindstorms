@@ -182,6 +182,10 @@ class BallDetector:
         heading = float(np.degrees(np.arctan2(fy, fx))) + self.robot_heading_offset_deg
         heading = (heading + 180.0) % 360.0 - 180.0
 
+        # Marker perimeter in pixels — larger = marker is close/well-lit and readable.
+        perimeter = float(np.sum(np.linalg.norm(np.diff(quad, axis=0, append=quad[:1]), axis=1)))
+        self._last_marker_perimeter = perimeter
+
         return (int(round(cx)), int(round(cy)), heading)
 
     # EMA weight for centre smoothing (0 = frozen, 1 = no smoothing).
@@ -309,8 +313,8 @@ class BallDetector:
 
         return white_balls + orange_balls, raw_white, raw_orange
 
-    # Minimum seconds between Roboflow API calls — limits quota usage.
-    YOLO_CALL_INTERVAL = 1.0
+    # Minimum seconds between Roboflow API calls.
+    YOLO_CALL_INTERVAL = 0.25
 
     def _yolo_worker(self):
         """Background thread: process the latest queued frame and cache result."""
@@ -348,6 +352,7 @@ class BallDetector:
                     'x': cx, 'y': cy, 'radius': r,
                     'area': float(np.pi * r * r), 'color': color,
                     'circularity': 1.0, 'fill_ratio': 1.0, 'solidity': 1.0,
+                    'confidence': round(float(p.get('confidence', 0.0)), 2),
                 })
             with self._yolo_lock:
                 self._yolo_cached_result = balls
