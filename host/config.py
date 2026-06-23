@@ -38,7 +38,7 @@ ROBOT_PIVOT_OFFSET_MM = ROBOT_LENGTH_MM * (0.5 - 0.25)   # 92.5 mm behind centre
 
 # ── Roboflow YOLO model ───────────────────────────────────────────────────────
 # Leave empty to fall back to the HoughCircles detector.
-ROBOFLOW_API_KEY   = os.environ.get("ROBOFLOW_API_KEY", "aHfWDo697fHFYFM6WcPD")
+ROBOFLOW_API_KEY   = os.environ.get("ROBOFLOW_API_KEY", "")
 ROBOFLOW_API_URL   = "https://serverless.roboflow.com"
 ROBOFLOW_MODEL_ID  = "ping-pong-finder-w6mxk/9"
 

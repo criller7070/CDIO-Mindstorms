@@ -734,8 +734,8 @@ def _restart_robot(host, ssh_user="robot"):
 
 
 def _load_profile(name: str) -> str:
-    """Return the IP for a named profile from robot_profiles.env."""
-    profiles_path = os.path.join(os.path.dirname(__file__), "..", "robot_profiles.env")
+    """Return the IP for a named profile from .env."""
+    profiles_path = os.path.join(os.path.dirname(__file__), "..", ".env")
     try:
         with open(profiles_path) as f:
             for line in f:
@@ -746,7 +746,7 @@ def _load_profile(name: str) -> str:
                 if key.strip() == name:
                     return val.strip()
     except FileNotFoundError:
-        raise SystemExit(f"robot_profiles.env not found at {profiles_path}")
+        raise SystemExit(f".env not found at {profiles_path}")
     known = []
     with open(profiles_path) as f:
         for line in f:

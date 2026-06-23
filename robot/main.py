@@ -1,9 +1,13 @@
 #!/usr/bin/env pybricks-micropython
 
 """
-EV3 Navigation Controller - Autonomous Path Execution
-Reads commands from commands.txt and executes a full mission
-Commands: FORWARD:distance, TURN:angle, REVERSE:distance, SPEED:value, STOP
+Entry point for EV3 brick. Reads commands from commands.txt and executes a full mission
+Commands: 
+    FORWARD:distance
+    TURN:angle
+    REVERSE:distance
+    SPEED:value
+    STOP
 """
 
 from pybricks.hubs import EV3Brick
@@ -17,41 +21,36 @@ import os
 # Constants
 WHEEL_DIAMETER          = 6.0    # mm  - effective rolling diameter of tracks
 AXLE_TRACK              = 43     # mm  - effective turn radius (empirical; physical is 118 mm but tracks slip)
-
 FORWARD_SPEED           = 200    # mm/s  - default forward speed
 TURN_SPEED              = 200    # deg/s - default turn rate
 LIFT_SPEED              = 150    # deg/s - lift motor speed
 SPIN_SPEED              = 300    # deg/s - spin motor speed
 GATE_SPEED              = 200    # deg/s - gate motor speed
-
 GYRO_BRAKE_OFFSET       = 12     # deg  - stop gyro loop this many degrees early to account for motor inertia
-
 FORWARD_DRIVEBASE_SCALE = 3.2288 # divide commanded mm by this for DriveBase.straight()
 DRIVEBASE_TURN_SCALE    = 1.3198 # multiply commanded degrees by this for DriveBase.turn() (no gyro)
-
 FORWARD_MM_PER_ROTATION = 62     # mm per motor rotation (fallback forward, no DriveBase)
 REVERSE_MM_PER_ROTATION = 174    # mm per motor rotation (fallback reverse, no DriveBase)
 FALLBACK_TURN_RATIO     = 736.5 / 90.0  # motor degrees per physical degree (fallback tank turn)
-
 LIFT_DOWN_MOTOR_RATIO   = 130.0 / 45.0  # motor degrees per physical degree (LIFT_DOWN)
 
 
 class EV3NavController:
     def __init__(self):
-        """Initialize EV3 robot"""
+        """1. Initialize EV3 robot"""
         self.ev3 = EV3Brick()
         self.ev3.screen.clear()
         self.ev3.screen.print("Init...")
         
-        # Queue for voice commands (run one at a time)
+        # 2. Queue for voice commands (run one at a time)
         self.voice_queue = []
         self.voice_speaking = False
         
-        # Spinning control
+        # 3. Spinning control
         self.spinning = False
         self.spin_speed = SPIN_SPEED
         
-        # Test Port A
+        # 4a. Test Port A
         try:
             self.left_motor = Motor(Port.A)
             print("[OK] Port A motor found")
@@ -61,7 +60,7 @@ class EV3NavController:
             print("[ERROR] Port A: {}".format(str(e)))
             raise
         
-        # Test Port B
+        # 4b. Test Port B
         try:
             self.right_motor = Motor(Port.B)
             print("[OK] Port B motor found")
@@ -71,7 +70,7 @@ class EV3NavController:
             print("[ERROR] Port B: {}".format(str(e)))
             raise
         
-        # Test Port C (Lifting mechanism)
+        # 4c. Test Port C (Lifting mechanism)
         try:
             self.lift_motor = Motor(Port.C)
             print("[OK] Port C lift motor found")
@@ -79,7 +78,7 @@ class EV3NavController:
             self.lift_motor = None
             print("[DEBUG] Port C lift motor not found, skipping lift commands")
 
-        # Test port D (gate)
+        # 4d. Test port D (gate)
         try:
             self.gate_motor = Motor(Port.D)
             print("[OK] Port D gate motor found")

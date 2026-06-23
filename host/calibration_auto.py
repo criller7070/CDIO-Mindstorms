@@ -398,3 +398,16 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         root.mainloop()
         cv2.destroyWindow(WIN)
     return confirmed
+
+
+if __name__ == "__main__":
+    import os
+    os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+    import cv2
+    from config import load_color_ranges, CAMERA_INDEX
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cr = load_color_ranges()
+    run_auto_calibration(cap, cr)
+    cap.release()

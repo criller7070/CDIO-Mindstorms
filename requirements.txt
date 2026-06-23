@@ -1,8 +1,4 @@
-# opencv-contrib-python (not plain opencv-python): the closed-loop controller's
-# robot tracking uses cv2.aruco, which ships only in the contrib build.
 opencv-contrib-python
 numpy
-# Roboflow hosted inference — primary ball detector backend.
 inference-sdk
-# Modern themed UI for the HSV calibration panel.
 customtkinter
