@@ -141,7 +141,7 @@ DENSIFY_GAP_PX         = 40.0   # maximum pixel gap between consecutive waypoint
 HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this close
                                  # > 2*ARRIVE_PX so it doesn't conflict with in_close_approach;
                                  # robot starts turning toward its post-arrival heading early
-GATE_OPEN_DEG          = 45     # absolute target angle for GATE_OPEN (45 = half-open)
+GATE_OPEN_DEG          = 0      # absolute target angle for GATE_OPEN (0 = fully open stop)
 GATE_CLOSE_DEG         = 90     # absolute target angle for GATE_CLOSE (90 = manual closed position)
 GATE_DROPOFF_DEG       = 45     # absolute target angle for dropoff partial-open (halfway)
 LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
