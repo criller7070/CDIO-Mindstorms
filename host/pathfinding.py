@@ -381,8 +381,9 @@ class FieldPlanner:
     # Cap at 9 to keep factorial under ~360k iterations; use 2-opt above.
     _BRUTE_FORCE_LIMIT = 9
 
-    def optimal_route(self, robot_pos, ball_positions, dropoff_pos):
-        """best visit order + A* path segments. brute-force ≤ 9 balls, greedy + 2-opt otherwise."""
+    def optimal_route(self, robot_pos, ball_positions, dropoff_pos, n_fixed=0):
+        """best visit order + A* path segments. brute-force ≤ 9 balls, greedy + 2-opt otherwise.
+        n_fixed: keep first n_fixed balls in order at the start of the route (e.g. VIP ball)."""
         n = len(ball_positions)
         if n == 0:
             path = self.astar(robot_pos, dropoff_pos)
@@ -420,30 +421,35 @@ class FieldPlanner:
 
         # Ball node indices are 1..n
         ball_nodes = list(range(1, n + 1))
+        # n_fixed pins the first n_fixed balls at the front of the route in order.
+        n_fixed = min(n_fixed, n)
+        fixed_nodes = ball_nodes[:n_fixed]
+        free_nodes  = ball_nodes[n_fixed:]
 
         if n <= self._BRUTE_FORCE_LIMIT:
             best_order, best_cost = None, float('inf')
-            for perm in permutations(ball_nodes):
-                c = route_cost(perm)
+            for perm in permutations(free_nodes):
+                c = route_cost(tuple(fixed_nodes) + perm)
                 if c < best_cost:
                     best_cost = c
-                    best_order = list(perm)
+                    best_order = list(fixed_nodes) + list(perm)
         else:
-            # Nearest-neighbour seed
-            remaining = list(ball_nodes)
-            best_order = []
-            cur = 0
+            # Nearest-neighbour seed (priority balls placed first, then greedy)
+            best_order = list(fixed_nodes)
+            remaining = list(free_nodes)
+            cur = fixed_nodes[-1] if fixed_nodes else 0
             while remaining:
                 nxt = min(remaining, key=lambda j: cost_cache[cur][j])
                 best_order.append(nxt)
                 cur = nxt
                 remaining.remove(nxt)
 
-            # 2-opt improvement
+            # 2-opt improvement (only swap within the free portion)
+            offset = n_fixed
             improved = True
             while improved:
                 improved = False
-                for i in range(len(best_order) - 1):
+                for i in range(offset, len(best_order) - 1):
                     for j in range(i + 2, len(best_order)):
                         before = (cost_cache[best_order[i - 1] if i > 0 else 0][best_order[i]]
                                   + cost_cache[best_order[j]][best_order[j + 1] if j + 1 < len(best_order) else n + 1])
@@ -689,8 +695,9 @@ class FieldPlanner:
         return commands, heading, cur_pos, driven_segs
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
-                   capacity=6, initial_heading_deg=0, face_deg=None):
-        """multi-trip planner: clusters balls, picks best first trip, routes each optimally."""
+                   capacity=6, initial_heading_deg=0, face_deg=None, n_priority=0):
+        """multi-trip planner: clusters balls, picks best first trip, routes each optimally.
+        n_priority: first n_priority balls in ball_positions are always visited first (VIP ball)."""
         meta = self._sim_metadata(robot_pos, dropoff_pos)
 
         # A ball is reachable if:
@@ -761,8 +768,12 @@ class FieldPlanner:
         best_first_order = None
 
         for fi in range(k):
-            pts = [ball_positions[j] for j in clusters[fi]]
-            local_order, segs = self.optimal_route(robot_pos, pts, dropoff_pos)
+            # sort cluster so priority balls (global indices < n_priority) come first
+            cluster_sorted = sorted(clusters[fi], key=lambda j: (0 if j < n_priority else 1, j))
+            pts = [ball_positions[j] for j in cluster_sorted]
+            n_fixed_here = sum(1 for j in cluster_sorted if j < n_priority)
+            local_order, segs = self.optimal_route(robot_pos, pts, dropoff_pos,
+                                                   n_fixed=n_fixed_here)
             if segs is None:
                 continue
             cost = sum(self._path_length(s) for s in segs)
@@ -773,7 +784,7 @@ class FieldPlanner:
                 best_cost = cost
                 best_first = fi
                 best_first_segs = segs
-                best_first_order = [clusters[fi][i] for i in local_order]
+                best_first_order = [cluster_sorted[i] for i in local_order]
 
         if best_first_segs is None:
             print("WARNING: could not plan any trip – check field bounds / obstacles.")
