@@ -601,12 +601,13 @@ def run_live(camera_index, link):
                 gate_state['open'] = False
                 gate_state['min_ball_dist'] = float('inf')
                 gate_state['steps_open'] = 0
-                nearest_idx = min(range(len(gate_state['ball_pxs'])),
-                                  key=lambda i: math.hypot(
-                                      waypoint[0] - gate_state['ball_pxs'][i][0],
-                                      waypoint[1] - gate_state['ball_pxs'][i][1]))
-                collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
-                gate_state['collected'].append(collected_pos)
+                if gate_state['ball_pxs']:
+                    nearest_idx = min(range(len(gate_state['ball_pxs'])),
+                                      key=lambda i: math.hypot(
+                                          waypoint[0] - gate_state['ball_pxs'][i][0],
+                                          waypoint[1] - gate_state['ball_pxs'][i][1]))
+                    collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
+                    gate_state['collected'].append(collected_pos)
                 print("[GATE] COLLECT at {:.0f}px (min {:.0f}px) - {} collected".format(
                     dist, gate_state['min_ball_dist'], len(gate_state['collected'])))
 
@@ -618,14 +619,11 @@ def run_live(camera_index, link):
             gate_state['steps_open'] = 0
             print("[GATE] PRE-OPEN at {:.0f}px from ball".format(dist))
 
-        # dropoff: partial-open gate then tip the tray to roll balls into the hole.
+        # dropoff: open gate and tip tray simultaneously to roll balls into the hole.
         if idx == len(wps) - 1:
-            if not gate_state['open']:
-                link.send_and_wait("GATE_OPEN:{}".format(GATE_DROPOFF_DEG))
-                gate_state['open'] = True
-                print("[GATE] OPEN {}° - releasing at dropoff".format(GATE_DROPOFF_DEG))
-            link.send_and_wait("LIFT_UP:{}".format(LIFT_DROPOFF_DEG))
-            print("[LIFT] UP {}° - tipping tray at dropoff".format(LIFT_DROPOFF_DEG))
+            link.send_and_wait("DROPOFF:{}:{}".format(GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG))
+            gate_state['open'] = True
+            print("[DROPOFF] gate={}° lift={}° motor deg".format(GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG))
 
     def replan():
         f = source.grab()

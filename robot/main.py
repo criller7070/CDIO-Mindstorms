@@ -23,7 +23,7 @@ WHEEL_DIAMETER          = 6.0    # mm  - effective rolling diameter of tracks
 AXLE_TRACK              = 43     # mm  - effective turn radius (empirical; physical is 118 mm but tracks slip)
 FORWARD_SPEED           = 200    # mm/s  - default forward speed
 TURN_SPEED              = 200    # deg/s - default turn rate
-LIFT_SPEED              = 150    # deg/s - lift motor speed
+LIFT_SPEED              = 200    # deg/s - lift motor speed
 SPIN_SPEED              = 300    # deg/s - spin motor speed
 GATE_SPEED              = 200    # deg/s - gate motor speed
 GYRO_BRAKE_OFFSET       = 12     # deg  - stop gyro loop this many degrees early to account for motor inertia
@@ -181,7 +181,7 @@ class EV3NavController:
                 cmd = cmd.strip()
                 value_str = value_str.strip()
                 # SAY keeps its value as a string; everything else is an int
-                if cmd == "SAY":
+                if cmd in ("SAY", "DROPOFF"):
                     value = value_str
                 else:
                     try:
@@ -390,7 +390,7 @@ class EV3NavController:
                     if value > 0:
                         self._log("LIFT UP {} deg".format(value))
                         # 130 motor deg = 45 physical deg (measured)
-                        scaled = value #int(round(value * 130.0 / 45.0))
+                        scaled = value  # motor deg == physical deg on UP side
                         self.lift_motor.run_angle(-self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
@@ -403,12 +403,12 @@ class EV3NavController:
                     self._log("Lift motor N/A")
                     self.commands_failed += 1
                     return False
-            
+
             elif cmd == "LIFT_DOWN":
                 if self.lift_motor:
                     if value > 0:
                         self._log("LIFT DOWN {} deg".format(value))
-                        scaled = int(round(value * LIFT_DOWN_MOTOR_RATIO))
+                        scaled = value
                         self.lift_motor.run_angle(self.lift_speed, scaled)
                         self.commands_executed += 1
                         cmd_time = time.time() - cmd_start_time
@@ -454,6 +454,18 @@ class EV3NavController:
                     self.commands_failed += 1
                     return False
             
+            elif cmd == "DROPOFF":
+                # gate_deg:lift_deg — open gate and lift tray simultaneously
+                parts = value.split(":")
+                gate_deg = int(parts[0]) if len(parts) > 0 and parts[0] else 90
+                lift_deg = int(parts[1]) if len(parts) > 1 and parts[1] else 150
+                self._log("DROPOFF gate={} lift={}".format(gate_deg, lift_deg))
+                if self.gate_motor:
+                    self.gate_motor.run_target(GATE_SPEED, gate_deg, wait=False)
+                if self.lift_motor:
+                    self.lift_motor.run_angle(-self.lift_speed, lift_deg)
+                self.commands_executed += 1
+
             elif cmd == "SHAKE_LIFT":
                 if self.lift_motor:
                     self._log("SHAKE LIFT")

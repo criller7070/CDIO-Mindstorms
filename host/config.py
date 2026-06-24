@@ -143,8 +143,8 @@ HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this
                                  # robot starts turning toward its post-arrival heading early
 GATE_OPEN_DEG          = 0      # absolute target angle for GATE_OPEN (0 = fully open stop)
 GATE_CLOSE_DEG         = 90     # absolute target angle for GATE_CLOSE (90 = manual closed position)
-GATE_DROPOFF_DEG       = 45     # absolute target angle for dropoff partial-open (halfway)
-LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
+GATE_DROPOFF_DEG       = 15     # absolute target angle for dropoff (opens 75deg from closed)
+LIFT_DROPOFF_DEG       = 200   # motor degrees for tray tip at dropoff
 GATE_PRE_OPEN_PX    = 200     # open gate when this many px from a ball so the robot
                               # drives INTO the ball with gate already open.
 BALL_GATE_THRESHOLD_PX = 70  # close gate (capture) when within this many px of ball.
