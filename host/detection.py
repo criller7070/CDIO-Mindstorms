@@ -423,6 +423,68 @@ class BallDetector:
             })
         return balls
 
+    def detect_hole_markers(self, frame, field_bounds=None):
+        """Detect dropoff-hole ArUco markers in the frame.
+
+        Returns a list of dicts, one per detected non-robot marker:
+            {'id': int, 'x': int, 'y': int, 'heading_deg': float, 'approach_deg': float}
+
+        'approach_deg' is the heading the robot should face when arriving at the
+        hole — opposite to the direction the marker faces into the field.  Assumes
+        each hole marker is mounted with its TOP edge pointing inward (into the
+        field), so the robot approaches from inside the field facing the marker.
+
+        field_bounds: (x0, y0, x1, y1) pixel bounds of the field.  When provided,
+        markers that are NOT near the left or right wall are silently dropped —
+        this filters out the robot's own ArUco marker without requiring robot_marker_id
+        to be set.
+        """
+        if self._aruco_detector is None:
+            return []
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = self._aruco_detector.detectMarkers(gray)
+        if ids is None or len(ids) == 0:
+            return []
+
+        ids_flat = ids.flatten()
+        holes = []
+        for i, mid in enumerate(ids_flat):
+            mid = int(mid)
+            if self.robot_marker_id is not None and mid == self.robot_marker_id:
+                continue
+            quad = corners[i].reshape(4, 2)
+            cx = float(quad[:, 0].mean())
+            cy = float(quad[:, 1].mean())
+
+            # When we know the field bounds, filter to markers near the left or
+            # right wall (within 20 % of the field width from each side).  This
+            # rejects the robot's marker — which is somewhere in the middle —
+            # without needing robot_marker_id to be explicitly configured.
+            if field_bounds is not None:
+                x0, y0, x1, y1 = field_bounds
+                wall_zone = (x1 - x0) * 0.20
+                if not (cx < x0 + wall_zone or cx > x1 - wall_zone):
+                    continue
+
+            top_mid = (quad[0] + quad[1]) / 2.0
+            fx, fy = top_mid[0] - cx, top_mid[1] - cy
+            heading = float(np.degrees(np.arctan2(fy, fx)))
+            heading = (heading + 180.0) % 360.0 - 180.0
+
+            # Robot faces the marker from inside the field, i.e. opposite direction.
+            approach = (heading + 180.0) % 360.0
+            if approach > 180.0:
+                approach -= 360.0
+
+            holes.append({
+                'id': mid,
+                'x': int(round(cx)),
+                'y': int(round(cy)),
+                'heading_deg': heading,
+                'approach_deg': approach,
+            })
+        return holes
+
     def detect_red_walls(self, frame):
         """Return dict with mask, edges, and Hough lines for the red boundary."""
         hsv = self._to_hsv(frame)

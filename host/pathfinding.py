@@ -312,123 +312,222 @@ class FieldPlanner:
     # Ball pickup routing with straight approach injection
     # ------------------------------------------------------------------
 
+    def _forced_approach_dir(self, ball_pos):
+        """
+        Return a forced (ux, uy) approach direction based on the ball's field position,
+        or None for open-field balls (caller uses A* walkback instead).
+
+        (ux, uy) is the direction the robot MOVES when arriving at the ball:
+            approach_point = ball - approach_px * (ux, uy)
+        so the approach_point is in the open space the robot comes FROM.
+
+        Priority order:
+          1. Corner (near two walls): bisect diagonally from the open-field quadrant.
+          2. Single wall: approach perpendicular from field toward wall.
+          3. Centre obstacle proximity: approach radially inward (from open space
+             toward the obstacle), so the gate sweeps cleanly through the ball.
+          4. Open field: return None.
+        """
+        bx, by = float(ball_pos[0]), float(ball_pos[1])
+        x0, y0, x1, y1 = self.bounds
+        threshold = self.wall_margin + self.effective_half_width_px
+
+        near_left   = bx - x0 < threshold
+        near_right  = x1 - bx < threshold
+        near_top    = by - y0 < threshold
+        near_bottom = y1 - by < threshold
+
+        _s2 = 1.0 / math.sqrt(2)
+        # Corners: diagonal from the open-field quadrant into the corner
+        if near_left  and near_top:    return (-_s2, -_s2)
+        if near_right and near_top:    return ( _s2, -_s2)
+        if near_left  and near_bottom: return (-_s2,  _s2)
+        if near_right and near_bottom: return ( _s2,  _s2)
+
+        # Single wall: perpendicular from field toward wall
+        if near_left:   return (-1.0,  0.0)
+        if near_right:  return ( 1.0,  0.0)
+        if near_top:    return ( 0.0, -1.0)
+        if near_bottom: return ( 0.0,  1.0)
+
+        # Centre obstacle: if ball is within a small buffer beyond the obstacle
+        # edge, force inward radial approach (from open space toward obstacle).
+        # 80 px ≈ 57 mm — enough to catch balls sitting beside the obstacle
+        # without swallowing open-field balls far from the centre.
+        if self.center is not None and self.center_clearance_px > 0:
+            cx, cy = float(self.center[0]), float(self.center[1])
+            ddx, ddy = bx - cx, by - cy
+            dist = math.hypot(ddx, ddy)
+            ctr_threshold = self.center_clearance_px + 80.0
+            if 0 < dist < ctr_threshold:
+                return ((cx - bx) / dist, (cy - by) / dist)
+
+        return None
+
+    # Keep old name as alias so any external callers still work.
+    _wall_approach_dir = _forced_approach_dir
+
     def _pickup_seg(self, from_pos, ball_pos):
         """
-        A* path to ball_pos whose final two points are an exact straight approach.
+        A* path to ball_pos whose final segment is a straight approach aligned
+        with the actual navigated path (not the geometric from→ball line).
 
-        Routes the transit via A* to an approach_point BALL_APPROACH_MM before the
-        ball (along the from→ball direction), then appends the exact approach_pt
-        and exact ball_center as the final two points.  These are stored without
-        grid-snapping so _segs_to_commands can preserve them through simplification.
+        For wall-adjacent balls the approach direction is forced perpendicular to
+        the nearest wall (existing behavior preserved).
 
-        Falls back to plain A* + exact endpoint if the approach_point is inside an
-        obstacle or the total distance is too short for a separate approach segment.
+        For all other balls: run A* straight to the ball, then walk back
+        BALL_APPROACH_MM along the resulting path to find the approach_point.
+        This guarantees the final straight segment is always obstacle-free
+        (it lies on the A* path itself), fixing approach-angle misalignment
+        for balls near the centre obstacle or in tight spaces.
         """
         bx, by = float(ball_pos[0]), float(ball_pos[1])
         fx, fy = float(from_pos[0]), float(from_pos[1])
         approach_px = BALL_APPROACH_MM * self.px_per_mm
 
-        dx, dy = bx - fx, by - fy
-        dist = math.hypot(dx, dy)
-
-        if dist > approach_px * 1.1:
-            ux, uy = dx / dist, dy / dist
+        # Wall, corner, or centre-adjacent: use forced direction.
+        wall_dir = self._forced_approach_dir(ball_pos)
+        if wall_dir is not None:
+            ux, uy = wall_dir
             apx = bx - approach_px * ux
             apy = by - approach_px * uy
-
             if not self._is_in_obstacle(apx, apy):
                 transit = self.astar((int(fx), int(fy)), (int(apx), int(apy)))
                 if transit is not None:
-                    # Replace grid-snapped transit endpoint with exact approach_pt,
-                    # then append exact ball center.  _segs_to_commands skips RDP
-                    # on these last two points so the straight approach is preserved.
                     return transit[:-1] + [(apx, apy), (bx, by)]
+            # Fallback for wall balls
+            seg = self.astar((int(fx), int(fy)), (int(bx), int(by)))
+            if seg:
+                seg[-1] = (bx, by)
+            return seg
 
-        # Fallback: plain A* with exact endpoint (fixes grid-snap, no approach guarantee)
+        # Open-field ball: A* to ball, walk back approach_px along path.
         seg = self.astar((int(fx), int(fy)), (int(bx), int(by)))
-        if seg:
-            seg[-1] = (bx, by)
+        if seg is None:
+            return None
+        seg[-1] = (bx, by)  # exact endpoint
+
+        # Walk backward from the ball end to find the approach_point.
+        remaining = approach_px
+        for i in range(len(seg) - 1, 0, -1):
+            p0x, p0y = float(seg[i - 1][0]), float(seg[i - 1][1])
+            p1x, p1y = float(seg[i][0]),     float(seg[i][1])
+            step = math.hypot(p1x - p0x, p1y - p0y)
+            if remaining <= step:
+                t = remaining / step
+                apx = p1x - t * (p1x - p0x)
+                apy = p1y - t * (p1y - p0y)
+                return seg[:i] + [(apx, apy), (bx, by)]
+            remaining -= step
+
+        # Path shorter than approach_px: return as-is (ball very close).
         return seg
 
     # ------------------------------------------------------------------
-    # Optimal route (TSP brute-force for ≤ ~8 balls)
+    # Optimal route (pre-compute costs, then brute-force + 2-opt)
     # ------------------------------------------------------------------
 
-    # Brute-force is O(n!) A* calls; cap it to keep planning under ~1 s.
-    _BRUTE_FORCE_LIMIT = 6
+    # Brute-force n! is fine on a cost matrix (no A* per permutation).
+    # Cap at 9 to keep factorial under ~360k iterations; use 2-opt above.
+    _BRUTE_FORCE_LIMIT = 9
 
     def optimal_route(self, robot_pos, ball_positions, dropoff_pos):
         """
         Return a good visit order and the corresponding A* path segments.
-        Brute-force for n <= _BRUTE_FORCE_LIMIT; nearest-neighbour greedy
-        otherwise (avoids the n! explosion with 7+ balls).
 
-        Returns:
-            ball_order  - list of indices into ball_positions
-            path_segs   - list of pixel-path segments:
-                          [robot→b0, b0→b1, ..., bN→dropoff]
+        Pre-computes O(n²) A* segments once, then:
+          - Brute-force TSP on the cost matrix for n ≤ _BRUTE_FORCE_LIMIT
+          - Nearest-neighbour + 2-opt for larger groups
         """
         n = len(ball_positions)
         if n == 0:
             path = self.astar(robot_pos, dropoff_pos)
             return [], ([path] if path else [])
 
-        if n <= self._BRUTE_FORCE_LIMIT:
-            best_order, best_segs, best_cost = None, None, float('inf')
-            for perm in permutations(range(n)):
-                waypoints = ([robot_pos]
-                             + [ball_positions[i] for i in perm]
-                             + [dropoff_pos])
-                segs = []
-                cost = 0.0
-                ok = True
-                for i in range(len(waypoints) - 1):
-                    p0 = (int(waypoints[i][0]), int(waypoints[i][1]))
-                    p1 = (int(waypoints[i + 1][0]), int(waypoints[i + 1][1]))
-                    is_ball_leg = i < len(waypoints) - 2
-                    if is_ball_leg:
-                        seg = self._pickup_seg(waypoints[i], waypoints[i + 1])
-                    else:
-                        seg = self.astar(p0, p1)
-                    if seg is None:
-                        ok = False
-                        break
-                    segs.append(seg)
-                    cost += self._path_length(seg)
-                if ok and cost < best_cost:
-                    best_cost = cost
-                    best_order = list(perm)
-                    best_segs = segs
-            return (best_order or list(range(n))), best_segs
+        # nodes: 0=robot, 1..n=balls, n+1=dropoff
+        nodes = [robot_pos] + list(ball_positions) + [dropoff_pos]
+        N = len(nodes)
 
-        # Greedy nearest-neighbour for large groups.
-        remaining = list(range(n))
-        order = []
-        segs = []
-        cur = robot_pos
-        while remaining:
-            best_idx, best_seg, best_d = None, None, float('inf')
-            for idx in remaining:
-                seg = self._pickup_seg(cur, ball_positions[idx])
-                if seg is None:
+        # Pre-compute all pairwise segments and costs once.
+        seg_cache = [[None] * N for _ in range(N)]
+        cost_cache = [[float('inf')] * N for _ in range(N)]
+        for i in range(N):
+            for j in range(N):
+                if i == j:
+                    cost_cache[i][j] = 0.0
                     continue
-                d = self._path_length(seg)
-                if d < best_d:
-                    best_d = d
-                    best_idx = idx
-                    best_seg = seg
-            if best_idx is None:
-                break
-            order.append(best_idx)
-            segs.append(best_seg)
-            cur = ball_positions[best_idx]
-            remaining.remove(best_idx)
-        # Final leg to dropoff
-        end_seg = self.astar((int(cur[0]), int(cur[1])),
-                             (int(dropoff_pos[0]), int(dropoff_pos[1])))
+                is_ball_dest = 1 <= j <= n
+                if is_ball_dest:
+                    seg = self._pickup_seg(nodes[i], nodes[j])
+                else:
+                    seg = self.astar(
+                        (int(nodes[i][0]), int(nodes[i][1])),
+                        (int(nodes[j][0]), int(nodes[j][1])))
+                seg_cache[i][j] = seg
+                cost_cache[i][j] = self._path_length(seg) if seg else float('inf')
+
+        def route_cost(order):
+            # order: list of ball node indices (1-based into nodes)
+            total = cost_cache[0][order[0]]
+            for k in range(len(order) - 1):
+                total += cost_cache[order[k]][order[k + 1]]
+            total += cost_cache[order[-1]][n + 1]
+            return total
+
+        # Ball node indices are 1..n
+        ball_nodes = list(range(1, n + 1))
+
+        if n <= self._BRUTE_FORCE_LIMIT:
+            best_order, best_cost = None, float('inf')
+            for perm in permutations(ball_nodes):
+                c = route_cost(perm)
+                if c < best_cost:
+                    best_cost = c
+                    best_order = list(perm)
+        else:
+            # Nearest-neighbour seed
+            remaining = list(ball_nodes)
+            best_order = []
+            cur = 0
+            while remaining:
+                nxt = min(remaining, key=lambda j: cost_cache[cur][j])
+                best_order.append(nxt)
+                cur = nxt
+                remaining.remove(nxt)
+
+            # 2-opt improvement
+            improved = True
+            while improved:
+                improved = False
+                for i in range(len(best_order) - 1):
+                    for j in range(i + 2, len(best_order)):
+                        before = (cost_cache[best_order[i - 1] if i > 0 else 0][best_order[i]]
+                                  + cost_cache[best_order[j]][best_order[j + 1] if j + 1 < len(best_order) else n + 1])
+                        after  = (cost_cache[best_order[i - 1] if i > 0 else 0][best_order[j]]
+                                  + cost_cache[best_order[i]][best_order[j + 1] if j + 1 < len(best_order) else n + 1])
+                        if after < before - 1e-6:
+                            best_order[i:j + 1] = best_order[i:j + 1][::-1]
+                            improved = True
+
+        if best_order is None:
+            best_order = ball_nodes
+
+        # Reconstruct segments in best order
+        segs = []
+        prev = 0
+        for node_idx in best_order:
+            seg = seg_cache[prev][node_idx]
+            if seg is None:
+                seg = [nodes[prev], nodes[node_idx]]
+            segs.append(seg)
+            prev = node_idx
+        end_seg = seg_cache[prev][n + 1]
         if end_seg:
             segs.append(end_seg)
-        return order, segs if segs else None
+
+        # Convert node indices back to ball_positions indices (0-based)
+        ball_order = [idx - 1 for idx in best_order]
+        return ball_order, segs
 
     @staticmethod
     def _path_length(path):
@@ -686,10 +785,31 @@ class FieldPlanner:
         """
         meta = self._sim_metadata(robot_pos, dropoff_pos)
 
-        reachable = [bp for bp in ball_positions if not self._is_in_obstacle(*bp)]
-        skipped_balls = [bp for bp in ball_positions if self._is_in_obstacle(*bp)]
+        # A ball is reachable if:
+        #   - Its center is outside the obstacle zone (A* fallback can reach it), OR
+        #   - Its center is inside the obstacle (e.g. wall-adjacent) but its
+        #     wall-perpendicular approach point is navigable.
+        approach_px = BALL_APPROACH_MM * self.px_per_mm
+        def _approach_reachable(bp):
+            bx, by = float(bp[0]), float(bp[1])
+            if not self._is_in_obstacle(bx, by):
+                return True  # ball outside obstacle — A* can reach it directly
+            # Ball is inside obstacle zone; check approach point.
+            wall_dir = self._forced_approach_dir(bp)
+            if wall_dir is not None:
+                ux, uy = wall_dir
+            else:
+                dx, dy = bx - float(robot_pos[0]), by - float(robot_pos[1])
+                dist = math.hypot(dx, dy)
+                ux, uy = (dx / dist, dy / dist) if dist > 1e-6 else (1.0, 0.0)
+            apx = bx - approach_px * ux
+            apy = by - approach_px * uy
+            return not self._is_in_obstacle(apx, apy)
+
+        reachable = [bp for bp in ball_positions if _approach_reachable(bp)]
+        skipped_balls = [bp for bp in ball_positions if not _approach_reachable(bp)]
         if skipped_balls:
-            print("Skipping {} ball(s) inside obstacles/walls.".format(len(skipped_balls)))
+            print("Skipping {} ball(s) with unreachable approach point.".format(len(skipped_balls)))
         ball_positions = reachable
         # Expose the ACTUAL routed list + skipped balls so the overlay can label
         # them correctly.  _debug_ball_order indexes into this reachable list,

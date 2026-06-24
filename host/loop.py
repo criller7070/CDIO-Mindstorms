@@ -41,7 +41,7 @@ from config import (
     ARUCO_FROM_BACK_FRAC,
     load_color_ranges,
     ARRIVE_PX, MAX_STEP_MM, FORWARD_CMD_SCALE, DENSIFY_GAP_PX,
-    BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG, GATE_DROPOFF_DEG,
+    BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG, GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG,
     CENTER_OBSTACLE_EXTRA_PX,
     ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
 )
@@ -72,7 +72,15 @@ def plan_waypoints(detector, frame, robot_pos):
     print("X obstacle: raw_r={}px  capped_r={}px  base_r={}px".format(
         detected_r, min(detected_r, CENTER_RADIUS), center_radius))
 
-    if analysis['field_detected']:
+    hole_markers = detector.detect_hole_markers(frame, analysis['field_bounds'])
+    if hole_markers:
+        # Sort ascending by x: leftmost = Goal A (higher point value), prefer it.
+        best = sorted(hole_markers, key=lambda m: m['x'])[0]
+        raw_dropoff = (best['x'], best['y'])
+        face_deg = best['approach_deg']
+        print("Hole marker #{} detected at ({},{}) approach={:.0f}deg  ({} total)".format(
+            best['id'], best['x'], best['y'], face_deg, len(hole_markers)))
+    elif analysis['field_detected']:
         raw_dropoff = (x_min, (y_min + y_max) // 2)
         face_deg = 180.0
     else:
@@ -91,20 +99,29 @@ def plan_waypoints(detector, frame, robot_pos):
         robot_width_mm=ROBOT_WIDTH_MM,
         robot_length_mm=ROBOT_LENGTH_MM,
         pivot_offset_mm=ROBOT_PIVOT_OFFSET_MM,
-        gate_open=True,
+        gate_open=False,
         gate_arm_mm=GATE_ARM_MM,
         aruco_from_back_frac=ARUCO_FROM_BACK_FRAC,
     )
     print("Footprint: half_w={:.0f}px  half_l={:.0f}px  eff_w={:.0f}px  center_clr={:.0f}px".format(
         planner.robot_half_width_px, planner.robot_half_length_px,
         planner.effective_half_width_px, planner.center_clearance_px))
-    dropoff = planner.snap_to_navigable(*raw_dropoff)
+    # Compute the dropoff approach waypoint — 100 px behind raw_dropoff in the
+    # face_deg direction.  This point is always inside the navigable zone, so A*
+    # can reach it without snapping.  plan_waypoints now builds the full final
+    # segment (A*→approach_wp→raw_dropoff) internally; callers must NOT call
+    # _add_dropoff_approach a second time.
+    _fr = math.radians(face_deg)
+    _offset = 100.0
+    approach_wp = (raw_dropoff[0] - _offset * math.cos(_fr),
+                   raw_dropoff[1] - _offset * math.sin(_fr))
+
     ball_positions = [(b['x'], b['y']) for b in analysis['balls']]
 
     planner.plan_trips(
         robot_pos=robot_pos,
         ball_positions=ball_positions,
-        dropoff_pos=dropoff,
+        dropoff_pos=approach_wp,
         capacity=8,
         initial_heading_deg=INITIAL_HEADING_DEG,
         face_deg=face_deg,
@@ -112,7 +129,10 @@ def plan_waypoints(detector, frame, robot_pos):
 
     segs = getattr(planner, '_debug_path_segs', [])
     waypoints = _flatten_segs(segs)
-    return waypoints, planner, analysis, dropoff, face_deg
+    # Append the actual wall position as the final step after the approach wp.
+    if waypoints:
+        waypoints.append((float(raw_dropoff[0]), float(raw_dropoff[1])))
+    return waypoints, planner, analysis, raw_dropoff, face_deg
 
 
 def _flatten_segs(segs, min_gap_px=6.0):
@@ -126,18 +146,18 @@ def _flatten_segs(segs, min_gap_px=6.0):
     return pts
 
 
-def _add_dropoff_approach(waypoints, dropoff, offset_px=100):
+def _add_dropoff_approach(waypoints, dropoff, face_deg=180.0, offset_px=100):
     """Insert a perpendicular-approach waypoint before the dropoff.
 
-    The dropoff is on the left wall so the robot must face west (180°).
-    Inserting a waypoint offset_px to the right of the dropoff forces the
-    robot to align on the west-bound line BEFORE the final approach,
-    so heading is already correct at the wall rather than corrected there.
+    Places a waypoint offset_px behind the dropoff (opposite to face_deg) so
+    the robot is already aligned and heading-corrected before the final wall
+    approach, rather than correcting at the last second.
     """
     if len(waypoints) < 2:
         return waypoints
     dx, dy = dropoff
-    approach = (dx + offset_px, dy)
+    fr = math.radians(face_deg)
+    approach = (dx - offset_px * math.cos(fr), dy - offset_px * math.sin(fr))
     result = list(waypoints)
     result.insert(len(result) - 1, approach)
     return result
@@ -187,8 +207,9 @@ class CameraPoseSource:
         self.aborted = False
         self.target = None
         self.waypoints = None
-        self.ball_pxs = []   # [(x,y), ...] updated from gate_state during run
-        self.footprint = {}  # set after planning: half_w, half_l, eff_w, center_clr (px)
+        self.ball_pxs = []      # [(x,y), ...] updated from gate_state during run
+        self.hole_markers = []  # [{'id':int,'x':int,'y':int,'approach_deg':float}, ...]
+        self.footprint = {}     # set after planning: half_w, half_l, eff_w, center_clr (px)
         self._lock = threading.Lock()
         self._latest_frame = None
         self._latest_pose = None
@@ -223,8 +244,9 @@ class CameraPoseSource:
                 waypoints = self.waypoints
                 target = self.target
                 ball_pxs = list(self.ball_pxs)
+                hole_markers = list(self.hole_markers)
             if self.show:
-                self._render(frame, pose, waypoints, target, ball_pxs)
+                self._render(frame, pose, waypoints, target, ball_pxs, hole_markers)
 
     def grab(self):
         with self._lock:
@@ -247,7 +269,7 @@ class CameraPoseSource:
     def fps(self):
         return self._fps
 
-    def _render(self, frame, pose, waypoints, target, ball_pxs=None):
+    def _render(self, frame, pose, waypoints, target, ball_pxs=None, hole_markers=None):
         vis = frame.copy()
         if waypoints:
             for i in range(1, len(waypoints)):
@@ -261,6 +283,16 @@ class CameraPoseSource:
                 cv2.circle(vis, bpt, 8, (0, 200, 255), 2)
                 cv2.putText(vis, str(n), (bpt[0] + 10, bpt[1] - 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
+        # Draw detected hole markers (yellow diamond + ID label).
+        if hole_markers:
+            for hm in hole_markers:
+                hpt = (int(hm['x']), int(hm['y']))
+                cv2.drawMarker(vis, hpt, (0, 255, 255), cv2.MARKER_DIAMOND, 18, 2)
+                fr = math.radians(hm['approach_deg'])
+                arr_end = (int(hpt[0] + 30 * math.cos(fr)), int(hpt[1] + 30 * math.sin(fr)))
+                cv2.arrowedLine(vis, hpt, arr_end, (0, 255, 255), 2, tipLength=0.4)
+                cv2.putText(vis, "#{}".format(hm['id']), (hpt[0] + 12, hpt[1] - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
         if target is not None:
             t = tuple(map(int, target))
             cv2.circle(vis, t, int(ARRIVE_PX), (255, 0, 255), 1)
@@ -483,8 +515,8 @@ def run_live(camera_index, link):
         'eff_w':  planner.effective_half_width_px,
         'center_clr': planner.center_clearance_px,
     }
+    source.hole_markers = detector.detect_hole_markers(frame, analysis['field_bounds'])
     waypoints = _densify_waypoints(waypoints)
-    waypoints = _add_dropoff_approach(waypoints, dropoff)
     source.waypoints = waypoints
     print("Robot at {} heading {:.1f}deg".format(robot_pos, robot_pose[2]))
     print("Field detected: {}  bounds: {}".format(
@@ -506,6 +538,7 @@ def run_live(camera_index, link):
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     link.send_and_wait("SPEED:300")
+    link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
 
     def get_pose():
         if source.aborted:
@@ -561,12 +594,14 @@ def run_live(camera_index, link):
             print("[GATE] COLLECT - ball retained, {} collected so far".format(
                 len(gate_state['collected'])))
 
-        # Dropoff: partial-open (45°) to release - wide enough to let balls roll
-        # out but narrow enough not to jam against the wall.
-        if idx == len(wps) - 1 and not gate_state['open']:
-            link.send_and_wait("GATE_OPEN:{}".format(GATE_DROPOFF_DEG))
-            gate_state['open'] = True
-            print("[GATE] OPEN {}° - releasing at dropoff".format(GATE_DROPOFF_DEG))
+        # Dropoff: partial-open gate then tip the tray to roll balls into the hole.
+        if idx == len(wps) - 1:
+            if not gate_state['open']:
+                link.send_and_wait("GATE_OPEN:{}".format(GATE_DROPOFF_DEG))
+                gate_state['open'] = True
+                print("[GATE] OPEN {}° — releasing at dropoff".format(GATE_DROPOFF_DEG))
+            link.send_and_wait("LIFT_UP:{}".format(LIFT_DROPOFF_DEG))
+            print("[LIFT] UP {}° — tipping tray at dropoff".format(LIFT_DROPOFF_DEG))
 
         # Pre-open gate when a ball is 3-5 waypoints away (~60-100 mm).
         # Minimum of 3 so the gate is fully deployed before reaching the ball
@@ -584,15 +619,15 @@ def run_live(camera_index, link):
         p = detector.detect_robot(f)
         if p is None:
             return None
-        wp, new_planner, new_analysis, new_dropoff, _ = plan_waypoints(detector, f, (p[0], p[1]))
+        wp, new_planner, new_analysis, new_dropoff, new_face_deg = plan_waypoints(detector, f, (p[0], p[1]))
         source.footprint = {
             'half_w': new_planner.robot_half_width_px,
             'half_l': new_planner.robot_half_length_px,
             'eff_w':  new_planner.effective_half_width_px,
             'center_clr': new_planner.center_clearance_px,
         }
+        source.hole_markers = detector.detect_hole_markers(f, new_analysis['field_bounds'])
         wp = _densify_waypoints(wp)
-        wp = _add_dropoff_approach(wp, new_dropoff)
         source.waypoints = wp
         COLLECTED_FILTER_PX = 40
         all_balls = [(b['x'], b['y']) for b in new_analysis['balls']]

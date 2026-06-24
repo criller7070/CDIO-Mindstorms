@@ -24,3 +24,8 @@ ENV/
 # Generated debug screenshots and masks
 screenshots/*
 !screenshots/.gitkeep
+
+# Debug/diagnostic images dumped to repo root
+*.png
+*.jpg
+*.jpeg

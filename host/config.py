@@ -14,8 +14,8 @@ SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 MASK_DIR       = os.path.join(SCREENSHOT_DIR, "masks")
 
 # ── Field layout ──────────────────────────────────────────────────────────────
-WALL_MARGIN         = 45
-CENTER_RADIUS       = 60
+WALL_MARGIN         = 20
+CENTER_RADIUS       = 0
 INITIAL_HEADING_DEG = -90
 HOLE_FRAC_X         = 0.05   # left hole: 5 % from left edge
 HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
@@ -131,10 +131,11 @@ HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this
 GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN (ball pickup)
 GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
 GATE_DROPOFF_DEG       = 45     # partial-open at dropoff: lets balls roll out without jamming walls
+LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
 BALL_GATE_THRESHOLD_PX = 50     # waypoint is a ball pickup when within this many px
                                  # must exceed trim offset (135mm=47px) but be small
                                  # enough to not fire at non-ball waypoints near balls
-CENTER_OBSTACLE_EXTRA_PX = 10   # extra px added to X obstacle radius before A*
+CENTER_OBSTACLE_EXTRA_PX = 5    # extra px added to X obstacle radius before A*
                                  # _build_grid already adds robot_half_width_px (~42px),
                                  # so keep this small - 10px compensates camera underestimate
                                  # without blocking reachable balls
