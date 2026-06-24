@@ -591,8 +591,8 @@ class FieldPlanner:
         n_collect = len(path_segs) - 1
         # Trim so the nose overshoots the ball by ~75 mm.
         # Measured ArUco-to-nose = 210 mm. Capture zone = 0..90 mm past nose.
-        # T=135 mm → nose at ball + (210-135) = ball + 75 mm.  Mid-capture-zone.
-        TRIM_MM = 135.0
+        # T=120 mm → nose at ball + (210-120) = ball + 90 mm.  Deep in capture-zone.
+        TRIM_MM = 120.0
         half_len_px = TRIM_MM * self.px_per_mm
 
         for leg, seg in enumerate(path_segs):
