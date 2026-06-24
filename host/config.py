@@ -145,7 +145,7 @@ GATE_OPEN_DEG          = 0      # absolute target angle for GATE_OPEN (0 = fully
 GATE_CLOSE_DEG         = 90     # absolute target angle for GATE_CLOSE (90 = manual closed position)
 GATE_DROPOFF_DEG       = 45     # absolute target angle for dropoff partial-open (halfway)
 LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
-GATE_PRE_OPEN_PX    = 80     # open gate when this many px from a ball so the robot
+GATE_PRE_OPEN_PX    = 100    # open gate when this many px from a ball so the robot
                               # drives INTO the ball with gate already open.
 BALL_GATE_THRESHOLD_PX = 70  # close gate (capture) when within this many px of ball.
                               # trim offset = 135mm * 0.369px/mm = 49.8px, must be > 50px.
