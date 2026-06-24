@@ -121,15 +121,20 @@ def plan_waypoints(detector, frame, robot_pos):
     segs = getattr(planner, '_debug_path_segs', [])
     order = getattr(planner, '_debug_ball_order', [])
     positions = getattr(planner, '_debug_ball_positions', ball_positions)
+    # build rank dict: (x,y) -> 1-based visit rank so renderer can label correctly
+    visit_rank = {}
     if order:
         print("Ball visit order: " + " ".join(
             "{}:({:.0f},{:.0f})".format(i+1, positions[j][0], positions[j][1])
             for i, j in enumerate(order)))
+        for rank, idx in enumerate(order, 1):
+            pos = positions[idx]
+            visit_rank[(int(round(pos[0])), int(round(pos[1])))] = rank
     waypoints = _flatten_segs(segs)
     # Append the actual wall position as the final step after the approach wp.
     if waypoints:
         waypoints.append((float(raw_dropoff[0]), float(raw_dropoff[1])))
-    return waypoints, planner, analysis, raw_dropoff, face_deg
+    return waypoints, planner, analysis, raw_dropoff, face_deg, visit_rank
 
 
 def _flatten_segs(segs, min_gap_px=6.0):
@@ -271,12 +276,20 @@ class CameraPoseSource:
                 p0 = tuple(map(int, waypoints[i - 1]))
                 p1 = tuple(map(int, waypoints[i]))
                 cv2.line(vis, p0, p1, (0, 200, 80), 1)
-        # draw detected balls with pickup-order numbers.
+        # draw detected balls with TSP visit-order numbers.
         if ball_pxs:
-            for n, (bx, by) in enumerate(ball_pxs, 1):
+            visit_rank = getattr(self, 'ball_visit_rank', {})
+            for bx, by in ball_pxs:
                 bpt = (int(bx), int(by))
                 cv2.circle(vis, bpt, 8, (0, 200, 255), 2)
-                cv2.putText(vis, str(n), (bpt[0] + 10, bpt[1] - 6),
+                # find matching rank (tolerant to sub-pixel rounding)
+                rank = visit_rank.get((int(round(bx)), int(round(by))))
+                if rank is None and visit_rank:
+                    closest = min(visit_rank, key=lambda p: (p[0]-bx)**2 + (p[1]-by)**2)
+                    if abs(closest[0]-bx) < 8 and abs(closest[1]-by) < 8:
+                        rank = visit_rank[closest]
+                label = str(rank) if rank is not None else "?"
+                cv2.putText(vis, label, (bpt[0] + 10, bpt[1] - 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
         # Draw detected hole markers (yellow diamond + ID label).
         if hole_markers:
@@ -434,7 +447,7 @@ def run_plan_only(camera_index):
         print("No robot marker found - cannot plan. Is the marker visible?")
         return
     robot_pos = (pose[0], pose[1])
-    waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
+    waypoints, planner, analysis, dropoff, face_deg, _vr = plan_waypoints(
         detector, frame, robot_pos)
     print("Robot at {}, heading {:.1f} deg".format(robot_pos, pose[2]))
     print("Planned {} waypoints, dropoff {}, face {} deg".format(
@@ -500,8 +513,9 @@ def run_live(camera_index, link):
 
     frame = source.grab()
     robot_pos = (robot_pose[0], robot_pose[1])
-    waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
+    waypoints, planner, analysis, dropoff, face_deg, visit_rank = plan_waypoints(
         detector, frame, robot_pos)
+    source.ball_visit_rank = visit_rank
     source.footprint = {
         'half_w': planner.robot_half_width_px,
         'half_l': planner.robot_half_length_px,
@@ -609,7 +623,8 @@ def run_live(camera_index, link):
         p = detector.detect_robot(f)
         if p is None:
             return None
-        wp, new_planner, new_analysis, new_dropoff, new_face_deg = plan_waypoints(detector, f, (p[0], p[1]))
+        wp, new_planner, new_analysis, new_dropoff, new_face_deg, new_vr = plan_waypoints(detector, f, (p[0], p[1]))
+        source.ball_visit_rank = new_vr
         source.footprint = {
             'half_w': new_planner.robot_half_width_px,
             'half_l': new_planner.robot_half_length_px,
