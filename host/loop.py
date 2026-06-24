@@ -107,11 +107,7 @@ def plan_waypoints(detector, frame, robot_pos):
     approach_wp = (raw_dropoff[0] - _offset * math.cos(_fr),
                    raw_dropoff[1] - _offset * math.sin(_fr))
 
-    # orange VIP ball first: +200 points for delivering it before any white ball.
-    orange_balls = [(b['x'], b['y']) for b in analysis['balls'] if b.get('color') == 'ORANGE']
-    white_balls  = [(b['x'], b['y']) for b in analysis['balls'] if b.get('color') != 'ORANGE']
-    ball_positions = orange_balls + white_balls
-    n_priority = len(orange_balls)
+    ball_positions = [(b['x'], b['y']) for b in analysis['balls']]
 
     planner.plan_trips(
         robot_pos=robot_pos,
@@ -120,7 +116,6 @@ def plan_waypoints(detector, frame, robot_pos):
         capacity=8,
         initial_heading_deg=INITIAL_HEADING_DEG,
         face_deg=face_deg,
-        n_priority=n_priority,
     )
 
     segs = getattr(planner, '_debug_path_segs', [])
