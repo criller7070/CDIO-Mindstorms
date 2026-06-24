@@ -12,7 +12,7 @@ Commands:
 
 from pybricks.hubs import EV3Brick
 from pybricks.ev3devices import Motor, GyroSensor, ColorSensor
-from pybricks.parameters import Port, Color
+from pybricks.parameters import Port, Color, Stop
 from pybricks.robotics import DriveBase
 import time
 import threading
@@ -87,9 +87,12 @@ class EV3NavController:
             print("[DEBUG] Port D gate motor not found, skipping gate commands")
 
         if self.gate_motor:
-            angle = self.gate_motor.angle()
+            try:
+                self.gate_motor.run_until_stalled(-GATE_SPEED, then=Stop.HOLD, duty_limit=40)
+            except Exception:
+                pass
             self.gate_motor.reset_angle(0)
-            print("[OK] Gate motor angle reset (was {}deg)".format(angle))
+            print("[OK] Gate motor homed to open position (angle=0)")
 
 
         # 5. Initialize DriveBase
