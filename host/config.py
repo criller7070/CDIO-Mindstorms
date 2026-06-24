@@ -36,6 +36,19 @@ ARUCO_FROM_BACK_FRAC = 0.344   # 110 / 320
 # generation compensates for it so the robot centre still follows the path.
 ROBOT_PIVOT_OFFSET_MM = ROBOT_LENGTH_MM * (0.5 - 0.25)   # 92.5 mm behind centre
 
+# load .env from repo root so ROBOFLOW_API_KEY and profile IPs are available
+# without the caller having to export them manually.
+_env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+try:
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip())
+except FileNotFoundError:
+    pass
+
 # ROBOFLOW YOLO MODEL
 # Leave empty to fall back to the HoughCircles detector.
 ROBOFLOW_API_KEY   = os.environ.get("ROBOFLOW_API_KEY", "")
@@ -128,9 +141,9 @@ DENSIFY_GAP_PX         = 40.0   # maximum pixel gap between consecutive waypoint
 HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this close
                                  # > 2*ARRIVE_PX so it doesn't conflict with in_close_approach;
                                  # robot starts turning toward its post-arrival heading early
-GATE_OPEN_DEG          = 90     # motor angle sent with GATE_OPEN (ball pickup)
-GATE_CLOSE_DEG         = 90     # motor angle sent with GATE_CLOSE
-GATE_DROPOFF_DEG       = 45     # partial-open at dropoff: lets balls roll out without jamming walls
+GATE_OPEN_DEG          = 0      # absolute target angle for GATE_OPEN (0 = fully open stop)
+GATE_CLOSE_DEG         = 90     # absolute target angle for GATE_CLOSE (90 = manual closed position)
+GATE_DROPOFF_DEG       = 45     # absolute target angle for dropoff partial-open (halfway)
 LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
 BALL_GATE_THRESHOLD_PX = 50     # waypoint is a ball pickup when within this many px
                                  # must exceed trim offset (135mm=47px) but be small

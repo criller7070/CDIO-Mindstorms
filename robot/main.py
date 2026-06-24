@@ -81,12 +81,10 @@ class EV3NavController:
             print("[DEBUG] Port D gate motor not found, skipping gate commands")
 
         if self.gate_motor:
-            try:
-                self.gate_motor.run_until_stalled(-GATE_SPEED, then=Stop.HOLD, duty_limit=40)
-            except Exception:
-                pass
-            self.gate_motor.reset_angle(0)
-            print("[OK] Gate motor homed to open position (angle=0)")
+            # gate must be manually placed at closed position before starting.
+            # zero encoder here so 90=closed, 0=open throughout the run.
+            self.gate_motor.reset_angle(90)
+            print("[OK] Gate encoder zeroed at closed position (angle=90)")
 
 
         # 5. Initialize DriveBase
@@ -426,9 +424,9 @@ class EV3NavController:
                 
             elif cmd == "GATE_OPEN":
                 if self.gate_motor:
-                    self._log("GATE OPEN {} deg".format(value))
+                    self._log("GATE -> {}".format(value))
                     try:
-                        self.gate_motor.run_angle(-GATE_SPEED, value)
+                        self.gate_motor.run_target(GATE_SPEED, value)
                     except Exception as e:
                         self._log("Gate open error: {}".format(e))
                         self.commands_failed += 1
@@ -442,9 +440,9 @@ class EV3NavController:
 
             elif cmd == "GATE_CLOSE":
                 if self.gate_motor:
-                    self._log("GATE CLOSE {} deg".format(value))
+                    self._log("GATE -> {}".format(value))
                     try:
-                        self.gate_motor.run_angle(GATE_SPEED, value)
+                        self.gate_motor.run_target(GATE_SPEED, value)
                     except Exception as e:
                         self._log("Gate close error: {}".format(e))
                         self.commands_failed += 1

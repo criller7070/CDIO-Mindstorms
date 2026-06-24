@@ -149,6 +149,19 @@ def _add_dropoff_approach(waypoints, dropoff, face_deg=180.0, offset_px=100):
     return result
 
 
+def _build_obstacle_overlay(planner, frame_shape):
+    """pre-render the A* obstacle grid into a BGR image for blending into the live feed."""
+    h, w = frame_shape[:2]
+    overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    gs = planner.GRID_SCALE
+    for gx in range(planner.gw):
+        for gy in range(planner.gh):
+            if planner.grid[gx][gy]:
+                px, py = planner._to_px(gx, gy)
+                cv2.rectangle(overlay, (px, py), (px + gs, py + gs), (60, 60, 60), -1)
+    return overlay
+
+
 def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
     """insert intermediate checkpoints so no gap exceeds max_gap_px."""
     if len(waypoints) < 2:
@@ -181,7 +194,8 @@ class CameraPoseSource:
         self.waypoints = None
         self.ball_pxs = []      # [(x,y), ...] updated from gate_state during run
         self.hole_markers = []  # [{'id':int,'x':int,'y':int,'approach_deg':float}, ...]
-        self.footprint = {}     # set after planning: half_w, half_l, eff_w, center_clr (px)
+        self.footprint = {}          # set after planning: half_w, half_l, eff_w, center_clr (px)
+        self.obstacle_overlay = None  # pre-rendered obstacle grid image, blended into every frame
         self._lock = threading.Lock()
         self._latest_frame = None
         self._latest_pose = None
@@ -217,8 +231,9 @@ class CameraPoseSource:
                 target = self.target
                 ball_pxs = list(self.ball_pxs)
                 hole_markers = list(self.hole_markers)
+                obs_overlay = self.obstacle_overlay
             if self.show:
-                self._render(frame, pose, waypoints, target, ball_pxs, hole_markers)
+                self._render(frame, pose, waypoints, target, ball_pxs, hole_markers, obs_overlay)
 
     def grab(self):
         with self._lock:
@@ -241,13 +256,15 @@ class CameraPoseSource:
     def fps(self):
         return self._fps
 
-    def _render(self, frame, pose, waypoints, target, ball_pxs=None, hole_markers=None):
+    def _render(self, frame, pose, waypoints, target, ball_pxs=None, hole_markers=None, obs_overlay=None):
         vis = frame.copy()
+        if obs_overlay is not None:
+            cv2.addWeighted(vis, 1.0, obs_overlay, 0.45, 0, vis)
         if waypoints:
             for i in range(1, len(waypoints)):
                 p0 = tuple(map(int, waypoints[i - 1]))
                 p1 = tuple(map(int, waypoints[i]))
-                cv2.line(vis, p0, p1, (80, 80, 80), 1)
+                cv2.line(vis, p0, p1, (0, 200, 80), 1)
         # draw detected balls with pickup-order numbers.
         if ball_pxs:
             for n, (bx, by) in enumerate(ball_pxs, 1):
@@ -486,6 +503,7 @@ def run_live(camera_index, link):
         'center_clr': planner.center_clearance_px,
     }
     source.hole_markers = detector.detect_hole_markers(frame, analysis['field_bounds'])
+    source.obstacle_overlay = _build_obstacle_overlay(planner, frame.shape)
     waypoints = _densify_waypoints(waypoints)
     source.waypoints = waypoints
     print("Robot at {} heading {:.1f}deg".format(robot_pos, robot_pose[2]))
@@ -508,7 +526,7 @@ def run_live(camera_index, link):
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     link.send_and_wait("SPEED:300")
-    link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
+    # gate starts at closed position (manually placed); no command needed.
 
     def get_pose():
         if source.aborted:
@@ -573,17 +591,6 @@ def run_live(camera_index, link):
             link.send_and_wait("LIFT_UP:{}".format(LIFT_DROPOFF_DEG))
             print("[LIFT] UP {}° - tipping tray at dropoff".format(LIFT_DROPOFF_DEG))
 
-        # pre-open gate when a ball is 3-5 waypoints away (~60-100mm).
-        # minimum of 3 so the gate is fully deployed before reaching the ball
-        # and doesn't stay open during long transit segments between balls.
-        if not gate_state['open']:
-            for look in range(3, min(6, len(wps) - idx)):
-                if _near_ball(wps[idx + look]):
-                    link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
-                    gate_state['open'] = True
-                    print("[GATE] OPEN - ball {} wp(s) ahead".format(look))
-                    break
-
     def replan():
         f = source.grab()
         p = detector.detect_robot(f)
@@ -597,6 +604,7 @@ def run_live(camera_index, link):
             'center_clr': new_planner.center_clearance_px,
         }
         source.hole_markers = detector.detect_hole_markers(f, new_analysis['field_bounds'])
+        source.obstacle_overlay = _build_obstacle_overlay(new_planner, f.shape)
         wp = _densify_waypoints(wp)
         source.waypoints = wp
         COLLECTED_FILTER_PX = 40
