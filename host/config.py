@@ -145,9 +145,9 @@ GATE_OPEN_DEG          = 0      # absolute target angle for GATE_OPEN (0 = fully
 GATE_CLOSE_DEG         = 90     # absolute target angle for GATE_CLOSE (90 = manual closed position)
 GATE_DROPOFF_DEG       = 45     # absolute target angle for dropoff partial-open (halfway)
 LIFT_DROPOFF_DEG       = 45     # tray tip angle at dropoff: enough to roll balls out, not flip tray
-BALL_GATE_THRESHOLD_PX = 50     # waypoint is a ball pickup when within this many px
-                                 # must exceed trim offset (135mm=47px) but be small
-                                 # enough to not fire at non-ball waypoints near balls
+BALL_GATE_THRESHOLD_PX = 70     # waypoint is a ball pickup when within this many px.
+                                 # trim offset = 135mm * 0.369px/mm = 49.8px, so threshold
+                                 # must be comfortably above ~50px. upper bound ~80px (2x densify gap).
 CENTER_OBSTACLE_EXTRA_PX = 5    # extra px added to X obstacle radius before A*
                                  # _build_grid already adds robot_half_width_px (~42px),
                                  # so keep this small - 10px compensates camera underestimate

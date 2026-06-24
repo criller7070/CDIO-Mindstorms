@@ -4,10 +4,30 @@ ball and field detection engine. no UI code lives here.
 receives a shared color_ranges dict; mutations (e.g. from calibration)
 are reflected immediately because Python dicts are passed by reference.
 """
+import base64
 import cv2
 import numpy as np
 import threading
 import time
+import requests
+
+
+class _RoboflowClient:
+    """minimal Roboflow serverless inference client using plain HTTP (no inference_sdk)."""
+
+    def __init__(self, api_url, api_key):
+        self._api_url = api_url.rstrip('/')
+        self._api_key = api_key
+
+    def infer(self, frame, model_id):
+        _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+        url = "{}/{}?api_key={}".format(self._api_url, model_id, self._api_key)
+        resp = requests.post(url, data=b64,
+                             headers={"Content-Type": "application/x-www-form-urlencoded"},
+                             timeout=10)
+        resp.raise_for_status()
+        return resp.json()
 
 
 class BallDetector:
@@ -18,22 +38,18 @@ class BallDetector:
         self._roboflow_model_id = roboflow_model_id
         self._roboflow_client   = None
         if roboflow_api_key:
-            try:
-                from inference_sdk import InferenceHTTPClient
-                self._roboflow_client = InferenceHTTPClient(
-                    api_url=roboflow_api_url,
-                    api_key=roboflow_api_key,
-                )
-                print("Roboflow YOLO backend active ({})".format(roboflow_model_id))
-                # background thread so the main loop never blocks on network I/O.
-                self._yolo_latest_frame  = None   # frame waiting to be processed
-                self._yolo_cached_result = []     # last good prediction list
-                self._yolo_lock  = threading.Lock()
-                self._yolo_event = threading.Event()
-                t = threading.Thread(target=self._yolo_worker, daemon=True)
-                t.start()
-            except ImportError:
-                print("inference_sdk not installed - falling back to HoughCircles")
+            self._roboflow_client = _RoboflowClient(
+                api_url=roboflow_api_url,
+                api_key=roboflow_api_key,
+            )
+            print("Roboflow YOLO backend active ({})".format(roboflow_model_id))
+            # background thread so the main loop never blocks on network I/O.
+            self._yolo_latest_frame  = None   # frame waiting to be processed
+            self._yolo_cached_result = []     # last good prediction list
+            self._yolo_lock  = threading.Lock()
+            self._yolo_event = threading.Event()
+            t = threading.Thread(target=self._yolo_worker, daemon=True)
+            t.start()
 
         # detection parameters (all shape gates are in color_ranges)
         self.min_ball_area      = 10
@@ -282,7 +298,7 @@ class BallDetector:
         white_balls  = self._update_stable_ball_tracks(white_cands,  'WHITE')
         orange_balls = self._update_stable_ball_tracks(orange_cands, 'ORANGE')
 
-        return white_balls + orange_balls, raw_white, raw_orange
+        return sorted(white_balls + orange_balls, key=lambda b: (b['x'], b['y'])), raw_white, raw_orange
 
     # minimum seconds between Roboflow API calls
     YOLO_CALL_INTERVAL = 0.25
