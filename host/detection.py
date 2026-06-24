@@ -430,7 +430,7 @@ class BallDetector:
         holes = []
         for i, mid in enumerate(ids_flat):
             mid = int(mid)
-            if self.robot_marker_id is not None and mid == self.robot_marker_id:
+            if mid not in (1, 2):
                 continue
             quad = corners[i].reshape(4, 2)
             cx = float(quad[:, 0].mean())
