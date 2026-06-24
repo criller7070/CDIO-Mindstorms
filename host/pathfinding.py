@@ -294,7 +294,9 @@ class FieldPlanner:
         """
         bx, by = float(ball_pos[0]), float(ball_pos[1])
         x0, y0, x1, y1 = self.bounds
-        threshold = self.wall_margin + self.effective_half_width_px
+        # only force approach direction for balls genuinely hugging a wall.
+        # robot half-width was inflating this to ~240mm, catching open-field balls.
+        threshold = self.wall_margin
 
         near_left   = bx - x0 < threshold
         near_right  = x1 - bx < threshold
