@@ -96,7 +96,7 @@ ARRIVE_PX       = 20.0   # waypoint counts as reached within this many pixels.
                          # the robot reach the waypoint area without tight looping.
 TURN_TOL_DEG    = 8.0    # rotate only for heading errors larger than this.
                          # TURN_COAST_DEG=3° so 8° leaves 5° cmd headroom before
-                         # coast clears the target — prevents limit-cycle oscillation.
+                         # coast clears the target - prevents limit-cycle oscillation.
 TURN_COMMIT_DEG = 45.0   # after a turn, drive a forward step before turning again
                          # unless the heading error still exceeds this. Prevents
                          # turn-turn-turn oscillation from small overshoots.
@@ -124,7 +124,7 @@ REPLAN_PX              = 150.0  # re-plan when robot is >150px off its target
 REPLAN_EVERY_N         = 8      # also force a replan after every N forward steps
 DENSIFY_GAP_PX         = 40.0   # maximum pixel gap between consecutive waypoints
                                  # 40px ≈ 29mm. At 40px spacing, 5px positional noise
-                                 # causes only 7° heading error — below TURN_TOL_DEG.
+                                 # causes only 7° heading error - below TURN_TOL_DEG.
 HEADING_LOOKAHEAD_PX   = 100.0  # pre-align to next waypoint's bearing when this close
                                  # > 2*ARRIVE_PX so it doesn't conflict with in_close_approach;
                                  # robot starts turning toward its post-arrival heading early
@@ -136,5 +136,5 @@ BALL_GATE_THRESHOLD_PX = 50     # waypoint is a ball pickup when within this man
                                  # enough to not fire at non-ball waypoints near balls
 CENTER_OBSTACLE_EXTRA_PX = 10   # extra px added to X obstacle radius before A*
                                  # _build_grid already adds robot_half_width_px (~42px),
-                                 # so keep this small — 10px compensates camera underestimate
+                                 # so keep this small - 10px compensates camera underestimate
                                  # without blocking reachable balls

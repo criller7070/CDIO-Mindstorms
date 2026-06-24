@@ -47,7 +47,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
     while idx < len(waypoints):
         steps += 1
         if steps > max_steps:
-            print("Exceeded {} steps without finishing — aborting (not converging).".format(max_steps))
+            print("Exceeded {} steps without finishing - aborting (not converging).".format(max_steps))
             link.send_and_wait("STOP")
             return False
         pose = get_pose()
@@ -58,7 +58,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             if misses % 5 == 0 or misses == MAX_POSE_MISS:
                 print("[MISS {}/{}] robot marker not visible".format(misses, MAX_POSE_MISS))
             if misses >= MAX_POSE_MISS:
-                print("Lost the robot marker for too long — aborting.")
+                print("Lost the robot marker for too long - aborting.")
                 return False
             time.sleep(0.05)
             continue
@@ -70,7 +70,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         dist = math.hypot(dx, dy)
 
         if dist < ARRIVE_PX:
-            # Enforce heading toward the next waypoint — ONE correction turn,
+            # Enforce heading toward the next waypoint - ONE correction turn,
             # then advance immediately WITHOUT re-checking position.
             # Re-checking position after a turn causes an infinite loop because
             # the robot's pivot offset moves the center away from the waypoint.
@@ -83,7 +83,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                     if on_step:
                         on_step(pose, waypoints[idx], idx, turn_cmd, len(waypoints))
                     if not link.send_and_wait(turn_cmd):
-                        print("No ack for {} — aborting.".format(turn_cmd))
+                        print("No ack for {} - aborting.".format(turn_cmd))
                         return False
                     just_turned = True
             if on_arrive:
@@ -106,12 +106,12 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         # Interpolate the heading target toward the next waypoint's bearing so
         # heading is reached *during* the approach, not corrected post-arrival.
         # Crucially, this uses a separate heading_target from the movement bearing
-        # so the TURN pre-aligns heading without redirecting the FORWARD step —
+        # so the TURN pre-aligns heading without redirecting the FORWARD step -
         # the robot still drives toward the current waypoint, just already facing
         # where it needs to go when it arrives.
         # Linear blend: 0% next-bearing at HEADING_LOOKAHEAD_PX, 100% at the
         # close-approach boundary (2*ARRIVE_PX) where turns are suppressed.
-        # Guard: skip if next bearing is >90° away — don't shortcut corners.
+        # Guard: skip if next bearing is >90° away - don't shortcut corners.
         heading_target = bearing
         if (not in_close_approach
                 and dist < HEADING_LOOKAHEAD_PX
@@ -134,7 +134,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         # another turn unless we're still badly off (> TURN_COMMIT_DEG). Forcing
         # a forward step between turns breaks the overshoot limit-cycle.
         # When the waypoint is directly behind (|move_err| > 150°) don't turn
-        # 180° — just reverse. This eliminates U-turn oscillation on small
+        # 180° - just reverse. This eliminates U-turn oscillation on small
         # overshoots. Within 2*ARRIVE_PX suppress all heading correction: turning
         # in place drifts the ArUco marker and causes repeated oscillation.
         if abs(move_err) > 150 and not in_close_approach:
@@ -157,7 +157,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             on_step(pose, waypoints[idx], idx, cmd, len(waypoints))
         t_send = time.time()
         if not link.send_and_wait(cmd):
-            print("No ack for {} — aborting.".format(cmd))
+            print("No ack for {} - aborting.".format(cmd))
             return False
         elapsed = time.time() - t_send
         after = get_pose()

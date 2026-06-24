@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Transport links — all expose send_and_wait(cmd) -> bool.
+Transport links - all expose send_and_wait(cmd) -> bool.
 
 BluetoothLink  legacy Bluetooth via tools_mission_sender
 TCPLink        WiFi over TCP (primary, matches ev3_server.py --tcp)

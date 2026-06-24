@@ -21,7 +21,7 @@ Modes:
     python loop.py --sim           # validate the loop, no hardware
     python loop.py --camera 0      # override camera index
 
-Requires an ArUco marker on the robot — see tools/tools_generate_aruco_marker.py.
+Requires an ArUco marker on the robot - see tools/tools_generate_aruco_marker.py.
 """
 import os
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -171,7 +171,7 @@ def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
 # ──────────────────────────────────────────────────────────────────────────────
 class CameraPoseSource:
     """Continuously grabs frames on a background thread so the control loop
-    always gets a fresh pose — even after a long blocking send_and_wait().
+    always gets a fresh pose - even after a long blocking send_and_wait().
 
     The debug window (imshow) runs inside the grab loop thread so the view
     refreshes at camera frame rate even while the main thread is blocked
@@ -337,7 +337,7 @@ def _open_camera(index):
 
 
 def run_probe(camera_index):
-    """Print (and show) the live ArUco pose. No robot connection — just verify tracking."""
+    """Print (and show) the live ArUco pose. No robot connection - just verify tracking."""
     detector = BallDetector(load_color_ranges())
     cap = _open_camera(camera_index)
     if not cap.isOpened():
@@ -406,7 +406,7 @@ def run_plan_only(camera_index):
 
     pose = detector.detect_robot(frame)
     if pose is None:
-        print("No robot marker found — cannot plan. Is the marker visible?")
+        print("No robot marker found - cannot plan. Is the marker visible?")
         return
     robot_pos = (pose[0], pose[1])
     waypoints, planner, analysis, dropoff, face_deg = plan_waypoints(
@@ -449,7 +449,7 @@ def run_live(camera_index, link):
             break
         time.sleep(0.05)
     if robot_pose is None:
-        print("Never saw the robot marker — aborting.")
+        print("Never saw the robot marker - aborting.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     # Warm up ball detection before planning.
@@ -460,7 +460,7 @@ def run_live(camera_index, link):
     yolo_mode = getattr(detector, '_roboflow_client', None) is not None
     wait_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.0
     print("Warming up ball detector ({})...".format(
-        "YOLO — waiting {:.0f}s for first API result".format(wait_s)
+        "YOLO - waiting {:.0f}s for first API result".format(wait_s)
         if yolo_mode else "HoughCircles"))
     deadline = time.monotonic() + max(wait_s, 0.5)
     while time.monotonic() < deadline or (yolo_mode and not detector._yolo_cached_result):
@@ -494,7 +494,7 @@ def run_live(camera_index, link):
     print("Waypoints ({}): {}".format(len(waypoints),
         [(int(x), int(y)) for x, y in waypoints[:10]]))
     if not waypoints:
-        print("Planner produced no path — nothing to do.")
+        print("Planner produced no path - nothing to do.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
     print("Planned {} waypoints.".format(len(waypoints)))
     print("px_per_mm: {:.3f}  MAX_STEP_MM: {}  step_px: {:.1f}  ARRIVE_PX: {}".format(
@@ -532,9 +532,9 @@ def run_live(camera_index, link):
         'ball_pxs':   [(b['x'], b['y']) for b in analysis['balls']],
         'dropoff':    dropoff,
         'open':       False,
-        'collected':  [],   # positions of balls already collected — filter from replans
+        'collected':  [],   # positions of balls already collected - filter from replans
     }
-    source.ball_pxs = gate_state['ball_pxs']  # shared reference — updates live in renderer
+    source.ball_pxs = gate_state['ball_pxs']  # shared reference - updates live in renderer
 
     def _near_ball(wp):
         bps = gate_state['ball_pxs']
@@ -558,15 +558,15 @@ def run_live(camera_index, link):
                                   waypoint[1] - gate_state['ball_pxs'][i][1]))
             collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
             gate_state['collected'].append(collected_pos)
-            print("[GATE] COLLECT — ball retained, {} collected so far".format(
+            print("[GATE] COLLECT - ball retained, {} collected so far".format(
                 len(gate_state['collected'])))
 
-        # Dropoff: partial-open (45°) to release — wide enough to let balls roll
+        # Dropoff: partial-open (45°) to release - wide enough to let balls roll
         # out but narrow enough not to jam against the wall.
         if idx == len(wps) - 1 and not gate_state['open']:
             link.send_and_wait("GATE_OPEN:{}".format(GATE_DROPOFF_DEG))
             gate_state['open'] = True
-            print("[GATE] OPEN {}° — releasing at dropoff".format(GATE_DROPOFF_DEG))
+            print("[GATE] OPEN {}° - releasing at dropoff".format(GATE_DROPOFF_DEG))
 
         # Pre-open gate when a ball is 3-5 waypoints away (~60-100 mm).
         # Minimum of 3 so the gate is fully deployed before reaching the ball
@@ -576,7 +576,7 @@ def run_live(camera_index, link):
                 if _near_ball(wps[idx + look]):
                     link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
                     gate_state['open'] = True
-                    print("[GATE] OPEN — ball {} wp(s) ahead".format(look))
+                    print("[GATE] OPEN - ball {} wp(s) ahead".format(look))
                     break
 
     def replan():
@@ -663,7 +663,7 @@ def _restart_robot(host, ssh_user="robot"):
     """Kill stale pybricks/bridge, reset IPC, restart both, wait for ready.
 
     Called automatically when using --profile or --tcp so the user only
-    needs to run loop.py once — no manual SSH cleanup required.
+    needs to run loop.py once - no manual SSH cleanup required.
     """
     import subprocess
 
@@ -721,13 +721,13 @@ def _restart_robot(host, ssh_user="robot"):
             for line in log[last_len:].splitlines():
                 print("  [EV3] " + line)
                 if "[DEBUG]" in line and "not found" in line:
-                    print("  *** SENSOR/MOTOR MISSING — replug cable and restart ***")
+                    print("  *** SENSOR/MOTOR MISSING - replug cable and restart ***")
             last_len = len(log)
         if "Follow loop ready" in log:
             print("--- EV3 ready ---")
             return True
         if "[FATAL ERROR]" in log:
-            print("EV3 FATAL ERROR — cannot proceed.")
+            print("EV3 FATAL ERROR - cannot proceed.")
             return False
     print("EV3 did not reach ready within 55 s.")
     return False

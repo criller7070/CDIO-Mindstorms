@@ -33,7 +33,7 @@ class BallDetector:
                 t = threading.Thread(target=self._yolo_worker, daemon=True)
                 t.start()
             except ImportError:
-                print("inference_sdk not installed — falling back to HoughCircles")
+                print("inference_sdk not installed - falling back to HoughCircles")
 
         # Detection parameters (all shape gates are in color_ranges)
         self.min_ball_area      = 10
@@ -74,7 +74,7 @@ class BallDetector:
         """BGR → HSV with CLAHE applied to the V channel.
 
         Normalising V locally means a global HSV threshold works across the
-        whole field even when illumination is uneven — dark corners are lifted
+        whole field even when illumination is uneven - dark corners are lifted
         and over-exposed areas are clipped, so the same lower/upper bounds
         catch the same physical colours everywhere in the frame.
         """
@@ -116,7 +116,7 @@ class BallDetector:
             field_bounds = (20, 20, fw - 20, fh - 20)
             field_hull   = None
 
-        # Remove any "ball" whose centre falls inside the robot body — the
+        # Remove any "ball" whose centre falls inside the robot body - the
         # robot's white ArUco marker frame creates circular Hough artefacts.
         robot_pose = self.detect_robot(frame)
         if robot_pose is not None:
@@ -182,7 +182,7 @@ class BallDetector:
         heading = float(np.degrees(np.arctan2(fy, fx))) + self.robot_heading_offset_deg
         heading = (heading + 180.0) % 360.0 - 180.0
 
-        # Marker perimeter in pixels — larger = marker is close/well-lit and readable.
+        # Marker perimeter in pixels - larger = marker is close/well-lit and readable.
         perimeter = float(np.sum(np.linalg.norm(np.diff(quad, axis=0, append=quad[:1]), axis=1)))
         self._last_marker_perimeter = perimeter
 
@@ -195,7 +195,7 @@ class BallDetector:
         """Return ((cx, cy), radius) of the centre obstacle (the red X marker).
 
         Among red contours whose centroid lies in the central 50 % of the
-        field, pick the single contour closest to the field centre — skipping
+        field, pick the single contour closest to the field centre - skipping
         the field-boundary contour (too large) and noise specks (too small).
         Its area-weighted centroid (cv2.moments) is the marker position and its
         minimum enclosing circle gives the marker radius, so the no-go zone
@@ -294,7 +294,7 @@ class BallDetector:
         """Return (balls, raw_white_mask, raw_orange_mask)."""
         hsv = self._to_hsv(frame)
 
-        # Keep raw HSV masks for calibration visualisation — not used for detection.
+        # Keep raw HSV masks for calibration visualisation - not used for detection.
         cr_w = self.color_ranges['WHITE']
         cr_o = self.color_ranges['ORANGE']
         raw_white  = cv2.inRange(hsv, np.array(cr_w['lower']), np.array(cr_w['upper']))
@@ -369,7 +369,7 @@ class BallDetector:
         """Detect balls via HoughCircles on the V channel, then classify by mean HSV.
 
         HoughCircles works from gradient edges, so it finds circles even when a
-        ball sits right at the V threshold — unlike contour analysis on a binary
+        ball sits right at the V threshold - unlike contour analysis on a binary
         mask, it is not sensitive to the exact per-pixel threshold value.
         Each candidate circle is accepted as WHITE or ORANGE based on the mean
         HSV measured inside it, which is far more stable than per-pixel checks.

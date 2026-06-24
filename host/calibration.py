@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Live HSV calibration — library module.
+Live HSV calibration - library module.
 Call run_calibration(cap, color_ranges) to open the trackbar UI.
 Modifies color_ranges in-place so the detector sees changes immediately.
 

@@ -18,7 +18,7 @@ import time
 import threading
 import os
 
-# Constants
+# constants
 WHEEL_DIAMETER          = 6.0    # mm  - effective rolling diameter of tracks
 AXLE_TRACK              = 43     # mm  - effective turn radius (empirical; physical is 118 mm but tracks slip)
 FORWARD_SPEED           = 200    # mm/s  - default forward speed
@@ -27,10 +27,10 @@ LIFT_SPEED              = 150    # deg/s - lift motor speed
 SPIN_SPEED              = 300    # deg/s - spin motor speed
 GATE_SPEED              = 200    # deg/s - gate motor speed
 GYRO_BRAKE_OFFSET       = 12     # deg  - stop gyro loop this many degrees early to account for motor inertia
-FORWARD_DRIVEBASE_SCALE = 3.2288 # divide commanded mm by this for DriveBase.straight()
-DRIVEBASE_TURN_SCALE    = 1.3198 # multiply commanded degrees by this for DriveBase.turn() (no gyro)
-FORWARD_MM_PER_ROTATION = 62     # mm per motor rotation (fallback forward, no DriveBase)
-REVERSE_MM_PER_ROTATION = 174    # mm per motor rotation (fallback reverse, no DriveBase)
+FORWARD_DRIVEBASE_SCALE = 3.2288 # unused on the robot - host/config.py carries the authoritative copy as FORWARD_CMD_SCALE
+DRIVEBASE_TURN_SCALE    = 1.3198 # unused - TURN uses gyro closed-loop or FALLBACK_TURN_RATIO directly
+FORWARD_MM_PER_ROTATION = 62     # mm per motor rotation - actual FORWARD implementation (DriveBase is wired but not used for movement)
+REVERSE_MM_PER_ROTATION = 174    # mm per motor rotation - different from forward because the tracks grip differently going back
 FALLBACK_TURN_RATIO     = 736.5 / 90.0  # motor degrees per physical degree (fallback tank turn)
 LIFT_DOWN_MOTOR_RATIO   = 130.0 / 45.0  # motor degrees per physical degree (LIFT_DOWN)
 
@@ -45,11 +45,11 @@ class EV3NavController:
         # 2. Queue for voice commands (run one at a time)
         self.voice_queue = []
         self.voice_speaking = False
-        
+
         # 3. Spinning control
         self.spinning = False
         self.spin_speed = SPIN_SPEED
-        
+
         # 4a. Test Port A
         try:
             self.left_motor = Motor(Port.A)
@@ -78,7 +78,7 @@ class EV3NavController:
             self.lift_motor = None
             print("[DEBUG] Port C lift motor not found, skipping lift commands")
 
-        # 4d. Test port D (gate)
+        # 4d. Test Port D (gate)
         try:
             self.gate_motor = Motor(Port.D)
             print("[OK] Port D gate motor found")
@@ -92,6 +92,7 @@ class EV3NavController:
             print("[OK] Gate motor angle reset (was {}deg)".format(angle))
 
 
+        # 5. Initialize DriveBase
         try:
             self.robot = DriveBase(
                 self.left_motor,
@@ -106,7 +107,7 @@ class EV3NavController:
             print("[DEBUG] DriveBase unavailable ({}), using motor.run_angle".format(str(e)))
             self.robot = None
 
-        # Motor self-test: spin each drive motor both directions, verify encoder responds
+        # 6. Motor self-test (TODO: move to run_diagnostics() - runs on every startup incl. follow mode)
         for name, motor in [("A", self.left_motor), ("B", self.right_motor)]:
             results = []
             for deg, label in [(180, "fwd"), (-180, "rev")]:
@@ -128,7 +129,7 @@ class EV3NavController:
             else:
                 print("[OK] Motor {} self-test: {}".format(name, status))
 
-        # Try to initialize gyro sensor for accurate turning (Port 1)
+        # 7. Gyro sensor (S1) - optional but gives much better turns
         try:
             self.gyro = GyroSensor(Port.S1)
             self.gyro.reset_angle(0)
@@ -137,10 +138,12 @@ class EV3NavController:
             self.gyro = None
             print("[DEBUG] Gyro sensor not found or failed ({}); using default turning".format(str(e)[:30]))
         
+        # 8. Default speeds
         self.forward_speed = FORWARD_SPEED
         self.turn_speed = TURN_SPEED
         self.lift_speed = LIFT_SPEED
 
+        # 9. Stats + battery check
         self.commands_executed = 0
         self.commands_failed = 0
         self.mission_start_time = None
@@ -154,37 +157,35 @@ class EV3NavController:
         self.ev3.light.on(Color.GREEN)
     
     def _log(self, message):
-        """Log message with timestamp to EV3 screen and console"""
+        """print to screen (truncated) and console"""
         current_time = time.time()
-        
-        # Format for screen (limited space)
+
         self.ev3.screen.clear()
         self.ev3.screen.print(message[:20])
-        
-        # Console output for debugging
+
         print("[EV3] {}".format(message))
     
     def execute_command(self, command_str):
-        """Execute a single command and log execution timing"""
+        """run one command, return True on success"""
         command_str = command_str.strip().upper()
-        
-        # Skip empty lines and comments
+
+        # skip blanks and comments
         if not command_str or command_str.startswith("#"):
             return True
-        
+
         cmd_start_time = time.time()
-        command_display = command_str[:20]  # Truncate for display
+        command_display = command_str[:20]  # truncate for display
         
         self.ev3.screen.clear()
         self.ev3.screen.print("Cmd: {}".format(command_display))
         
         try:
-            # Parse command format: "TYPE:parameter"
+            # split "TYPE:value"
             if ":" in command_str:
                 cmd, value_str = command_str.split(":", 1)
                 cmd = cmd.strip()
                 value_str = value_str.strip()
-                # For SAY commands, keep value as string; for others, convert to int
+                # SAY keeps its value as a string; everything else is an int
                 if cmd == "SAY":
                     value = value_str
                 else:
@@ -198,7 +199,7 @@ class EV3NavController:
                 cmd = command_str.strip()
                 value = 0
             
-            # Execute command based on type
+            # dispatch
             if cmd == "FORWARD":
                 if value > 0:
                     self._log("FWD {} mm".format(value))
@@ -342,7 +343,7 @@ class EV3NavController:
             elif cmd == "SAY":
                 if value:
                     self._log("SAY: {}".format(value[:15]))
-                    # Queue voice command to run in background
+                    # fire and forget
                     def speak_async():
                         self.voice_speaking = True
                         try:
@@ -369,7 +370,7 @@ class EV3NavController:
                             if self.robot:
                                 self.robot.turn(360)
                             else:
-                                # Tank spin: both motors opposite directions
+                                # tank spin
                                 self.left_motor.run_angle(self.spin_speed, 360, wait=False)
                                 self.right_motor.run_angle(-self.spin_speed, 360, wait=True)
                         except:
@@ -396,7 +397,7 @@ class EV3NavController:
                 if self.lift_motor:
                     if value > 0:
                         self._log("LIFT UP {} deg".format(value))
-                        # Calibrated: 130 motor degrees = 45 physical degrees
+                        # 130 motor deg = 45 physical deg (measured)
                         scaled = value #int(round(value * 130.0 / 45.0))
                         self.lift_motor.run_angle(-self.lift_speed, scaled)
                         self.commands_executed += 1
@@ -464,7 +465,7 @@ class EV3NavController:
             elif cmd == "SHAKE_LIFT":
                 if self.lift_motor:
                     self._log("SHAKE LIFT")
-                    for _ in range(3):  # Shake 3 times, adjust as needed
+                    for _ in range(3):  # 3 shakes, tune as needed
                         self.lift_motor.run_angle(-self.lift_speed, 90)
                         self.lift_motor.run_angle(self.lift_speed, 90)
                     self.commands_executed += 1
@@ -491,20 +492,12 @@ class EV3NavController:
         
     
     
-    # File bridge shared with ev3_server.py (the Bluetooth process).
+    # IPC files shared with ev3_server.py
     CL_CMD_FILE = "/home/robot/cl_cmd.txt"
     CL_ACK_FILE = "/home/robot/cl_ack.txt"
 
     def run_follow_loop(self):
-        """Persistent closed-loop executor.
-
-        The PC's closed_loop_controller streams ONE command at a time. The
-        Bluetooth process (ev3_server.py) drops each into CL_CMD_FILE tagged
-        with a sequence number; we execute it and stamp CL_ACK_FILE with the
-        same sequence so the bridge can return DONE to the PC. This is what
-        lets the host re-observe the robot after every single move and keep it
-        on track, instead of dead-reckoning a whole mission.
-        """
+        """wait for commands from ev3_server.py and execute them one at a time."""
         self.ev3.screen.clear()
         self.ev3.screen.print("Follow mode")
         self.ev3.speaker.say("Follow mode")
@@ -513,7 +506,7 @@ class EV3NavController:
         self.turn_speed = 300
         self._log("Follow loop ready")
 
-        # Seed the ack file so a stale value can't be mistaken for a real one.
+        # stale ack would look like a real one without this
         self._write_ack(-1)
         last_seq = -1
 
@@ -530,7 +523,7 @@ class EV3NavController:
             self._write_ack(seq)
 
     def _read_command(self):
-        """Return (seq, command) from CL_CMD_FILE, or (None, None) on any error."""
+        """return (seq, command) from CL_CMD_FILE, or (None, None) on any error."""
         try:
             with open(self.CL_CMD_FILE, "r") as f:
                 line = f.readline().strip()
@@ -542,7 +535,7 @@ class EV3NavController:
             return None, None
 
     def _write_ack(self, seq):
-        """Atomically stamp CL_ACK_FILE with seq (write temp, then rename)."""
+        """write seq to CL_ACK_FILE atomically."""
         tmp = self.CL_ACK_FILE + ".tmp"
         try:
             with open(tmp, "w") as f:
@@ -552,13 +545,14 @@ class EV3NavController:
             self._log("ack write failed: {}".format(str(e)[:15]))
 
     def execute_mission(self, mission_file="commands.txt"):
-        """Read mission file and execute all commands in sequence"""
+        """load mission file and run all commands in order"""
         self.mission_start_time = time.time()
         self.ev3.screen.clear()
         self.ev3.speaker.say("Starting mission")
         self.ev3.light.on(Color.YELLOW)
         
-        # Try to find mission file in multiple locations
+        # TODO: simplify to one path - robot always runs from /home/robot/CDIO-Mindstorms/robot/
+        # this multi-path search papers over a bad deployment rather than catching it
         possible_paths = [
             mission_file,
             "/home/root/{}".format(mission_file),
@@ -583,7 +577,7 @@ class EV3NavController:
             except OSError:
                 continue
         
-        # Handle file not found
+        # no file found
         if not found_file:
             self.ev3.screen.clear()
             self.ev3.screen.print("No mission file!")
@@ -593,7 +587,7 @@ class EV3NavController:
             self.ev3.light.on(Color.RED)
             return False
         
-        # Handle empty mission
+        # file found but nothing in it
         if not commands:
             self.ev3.screen.clear()
             self.ev3.screen.print("Empty mission!")
@@ -607,7 +601,7 @@ class EV3NavController:
         self.ev3.speaker.say("Mission loaded")
         time.sleep(2)
         
-        # Execute all commands
+        # run
         try:
             for i, cmd in enumerate(commands):
                 progress = "Step {}/{}".format(i + 1, len(commands))
@@ -621,7 +615,7 @@ class EV3NavController:
                     self._log("Cmd failed!")
                     time.sleep(1)
             
-            # Mission complete
+            # done
             mission_time = time.time() - self.mission_start_time
             self.ev3.screen.clear()
             self.ev3.screen.print("Mission OK!")
@@ -654,7 +648,7 @@ class EV3NavController:
 
 
 def run_diagnostics():
-    """Test which motors are connected"""
+    """probe each port and report what's connected"""
     print("=" * 60)
     print("GolfBot 9000: Motor Diagnostics")
     print("=" * 60)
@@ -671,7 +665,7 @@ def run_diagnostics():
             motor = Motor(port)
             print("[FOUND] Motor on {}".format(port_name))
             ev3.speaker.beep(frequency=1000, duration=100)
-            # Try to move it slightly to confirm
+            # nudge it to confirm it's not just detected but actually responsive
             motor.run_angle(100, 90, wait=True)
             motor.reset_angle(0)
             print("  → Motor responsive (moved 90°)")
@@ -683,13 +677,13 @@ def run_diagnostics():
     
     for port_name, port in sensor_ports:
         try:
-            # Try gyro first (most likely)
+            # gyro first (most common)
             gyro = GyroSensor(port)
             print("[FOUND] Gyro Sensor on {}".format(port_name))
             ev3.speaker.beep(frequency=800, duration=100)
         except:
             try:
-                # Try color sensor
+                # try color sensor
                 color = ColorSensor(port)
                 print("[FOUND] Color Sensor on {}".format(port_name))
                 ev3.speaker.beep(frequency=800, duration=100)
@@ -704,14 +698,13 @@ def run_diagnostics():
 
 
 def main():
-    """Main entry point"""
     import sys
-    
+
     print("\n" + "=" * 60)
     print("GolfBot 9000: EV3 Navigation Controller")
     print("=" * 60 + "\n")
-    
-    # Check for diagnostic mode
+
+    # diagnostic / test mode
     if "--diagnostics" in sys.argv or "--test" in sys.argv:
         try:
             run_diagnostics()
@@ -719,7 +712,7 @@ def main():
             print("[ERROR] Diagnostics failed: {}".format(str(e)))
         return
 
-    # Closed-loop follow mode: execute single commands streamed from the PC.
+    # follow mode: one command at a time, streamed from the PC
     if "--follow" in sys.argv:
         try:
             controller = EV3NavController()
@@ -728,7 +721,7 @@ def main():
             print("[FATAL ERROR] {}".format(str(e)))
         return
 
-    # Normal mission execution
+    # open-loop mission from commands.txt
     try:
         controller = EV3NavController()
         controller.execute_mission()

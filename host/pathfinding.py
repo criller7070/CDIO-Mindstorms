@@ -602,11 +602,11 @@ class FieldPlanner:
             # front face, so the ball must end up JUST in front of the robot.
             # Trim the planned path by half a body length of ARC length from the
             # end, so the robot's CENTRE stops there and its NOSE lands on the
-            # ball — driving the centre onto the ball would shove it away.
+            # ball - driving the centre onto the ball would shove it away.
             # Walking back along the polyline (not just the last segment) keeps
             # the nose on the ball even when the final hop is shorter than the
             # half-length.  Pivot compensation in the move loop then lands the
-            # centre on this trimmed endpoint automatically — no post-hoc command
+            # centre on this trimmed endpoint automatically - no post-hoc command
             # surgery needed.  (Wire a LIFT_DOWN / intake command in right after
             # this leg once collection is implemented.)
             if is_collect and half_len_px > 0:
@@ -795,7 +795,7 @@ class FieldPlanner:
         """Draw the planned route on a copy of frame for visual inspection.
 
         path_segs are the ACTUAL driven polylines (trimmed to the nose-stops),
-        so collect legs end half a body length short of the ball centre — the
+        so collect legs end half a body length short of the ball centre - the
         visible gap is exactly the front-intake reach.
 
         ball_positions must be the REACHABLE list that ball_order indexes into.
@@ -837,7 +837,7 @@ class FieldPlanner:
         cv2.putText(vis, "START", (int(robot_pos[0]) + 10, int(robot_pos[1])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        # Skipped balls (unreachable) — greyed out so it's clear the route
+        # Skipped balls (unreachable) - greyed out so it's clear the route
         # ignores them.  Drawn first so routed balls sit on top.
         for sx, sy in (skipped or []):
             sx, sy = int(sx), int(sy)
