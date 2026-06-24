@@ -41,7 +41,7 @@ from config import (
     ARUCO_FROM_BACK_FRAC,
     load_color_ranges,
     ARRIVE_PX, MAX_STEP_MM, FORWARD_CMD_SCALE, DENSIFY_GAP_PX,
-    BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG, GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG,
+    GATE_PRE_OPEN_PX, BALL_GATE_THRESHOLD_PX, GATE_OPEN_DEG, GATE_CLOSE_DEG, GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG,
     CENTER_OBSTACLE_EXTRA_PX,
     ROBOFLOW_API_KEY, ROBOFLOW_API_URL, ROBOFLOW_MODEL_ID,
 )
@@ -119,6 +119,12 @@ def plan_waypoints(detector, frame, robot_pos):
     )
 
     segs = getattr(planner, '_debug_path_segs', [])
+    order = getattr(planner, '_debug_ball_order', [])
+    positions = getattr(planner, '_debug_ball_positions', ball_positions)
+    if order:
+        print("Ball visit order: " + " ".join(
+            "{}:({:.0f},{:.0f})".format(i+1, positions[j][0], positions[j][1])
+            for i, j in enumerate(order)))
     waypoints = _flatten_segs(segs)
     # Append the actual wall position as the final step after the approach wp.
     if waypoints:
@@ -557,22 +563,22 @@ def run_live(camera_index, link):
     }
     source.ball_pxs = gate_state['ball_pxs']  # shared reference - updates live in renderer
 
-    def _near_ball(wp):
+    def _ball_dist(wp):
         bps = gate_state['ball_pxs']
         if not bps:
-            return False
-        return min(math.hypot(wp[0]-b[0], wp[1]-b[1]) for b in bps) < BALL_GATE_THRESHOLD_PX
+            return float('inf')
+        return min(math.hypot(wp[0]-b[0], wp[1]-b[1]) for b in bps)
 
     def on_arrive(waypoint, idx, wps):
-        # at a ball waypoint: open if still closed (sweep in ball), then close to retain.
-        if _near_ball(waypoint):
+        dist = _ball_dist(waypoint)
+
+        if dist < BALL_GATE_THRESHOLD_PX:
+            # close zone: gate should already be open from pre-open; close to capture.
             if not gate_state['open']:
                 link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
                 gate_state['open'] = True
             link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
             gate_state['open'] = False
-            # remove this ball from the active list so it doesn't
-            # re-trigger gate operations at the next nearby waypoint.
             nearest_idx = min(range(len(gate_state['ball_pxs'])),
                               key=lambda i: math.hypot(
                                   waypoint[0] - gate_state['ball_pxs'][i][0],
@@ -581,6 +587,13 @@ def run_live(camera_index, link):
             gate_state['collected'].append(collected_pos)
             print("[GATE] COLLECT - ball retained, {} collected so far".format(
                 len(gate_state['collected'])))
+
+        elif dist < GATE_PRE_OPEN_PX:
+            # approach zone: pre-open so robot drives into ball with gate already open.
+            if not gate_state['open']:
+                link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
+                gate_state['open'] = True
+                print("[GATE] PRE-OPEN at {:.0f}px from ball".format(dist))
 
         # dropoff: partial-open gate then tip the tray to roll balls into the hole.
         if idx == len(wps) - 1:
