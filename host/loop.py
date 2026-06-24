@@ -545,7 +545,7 @@ def run_live(camera_index, link):
         print("ERROR: could not connect/handshake with the EV3 bridge.")
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
-    link.send_and_wait("SPEED:300")
+    link.send_and_wait("SPEED:500")
     # gate starts at closed position (manually placed); no command needed.
 
     def get_pose():
