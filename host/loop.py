@@ -570,10 +570,11 @@ def run_live(camera_index, link):
                 len(balls), " ".join(ball_strs), dropoff))
 
     gate_state = {
-        'ball_pxs':   [(b['x'], b['y']) for b in analysis['balls']],
-        'dropoff':    dropoff,
-        'open':       False,
-        'collected':  [],   # positions of balls already collected - filter from replans
+        'ball_pxs':      [(b['x'], b['y']) for b in analysis['balls']],
+        'dropoff':       dropoff,
+        'open':          False,
+        'collected':     [],   # positions of balls already collected - filter from replans
+        'close_zone_n':  0,    # consecutive close-zone arrivals with gate open
     }
     source.ball_pxs = gate_state['ball_pxs']  # shared reference - updates live in renderer
 
@@ -587,27 +588,38 @@ def run_live(camera_index, link):
         dist = _ball_dist(waypoint)
 
         if dist < BALL_GATE_THRESHOLD_PX:
-            # close zone: gate should already be open from pre-open; close to capture.
             if not gate_state['open']:
+                # gate wasn't pre-opened; open now and let robot travel one more step
                 link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
                 gate_state['open'] = True
-            link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
-            gate_state['open'] = False
-            nearest_idx = min(range(len(gate_state['ball_pxs'])),
-                              key=lambda i: math.hypot(
-                                  waypoint[0] - gate_state['ball_pxs'][i][0],
-                                  waypoint[1] - gate_state['ball_pxs'][i][1]))
-            collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
-            gate_state['collected'].append(collected_pos)
-            print("[GATE] COLLECT - ball retained, {} collected so far".format(
-                len(gate_state['collected'])))
+                gate_state['close_zone_n'] = 0
+                print("[GATE] LATE-OPEN at {:.0f}px from ball".format(dist))
+            else:
+                # gate already open; count arrivals in close zone before capturing
+                gate_state['close_zone_n'] += 1
+                if gate_state['close_zone_n'] >= 2:
+                    link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
+                    gate_state['open'] = False
+                    gate_state['close_zone_n'] = 0
+                    nearest_idx = min(range(len(gate_state['ball_pxs'])),
+                                      key=lambda i: math.hypot(
+                                          waypoint[0] - gate_state['ball_pxs'][i][0],
+                                          waypoint[1] - gate_state['ball_pxs'][i][1]))
+                    collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
+                    gate_state['collected'].append(collected_pos)
+                    print("[GATE] COLLECT - ball retained, {} collected so far".format(
+                        len(gate_state['collected'])))
 
         elif dist < GATE_PRE_OPEN_PX:
             # approach zone: pre-open so robot drives into ball with gate already open.
+            gate_state['close_zone_n'] = 0
             if not gate_state['open']:
                 link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
                 gate_state['open'] = True
                 print("[GATE] PRE-OPEN at {:.0f}px from ball".format(dist))
+
+        else:
+            gate_state['close_zone_n'] = 0
 
         # dropoff: partial-open gate then tip the tray to roll balls into the hole.
         if idx == len(wps) - 1:

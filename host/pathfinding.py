@@ -704,17 +704,19 @@ class FieldPlanner:
             bx, by = float(bp[0]), float(bp[1])
             if not self._is_in_obstacle(bx, by):
                 return True  # ball outside obstacle — A* can reach it directly
-            # Ball is inside obstacle zone; check approach point.
+            # Ball inside obstacle (e.g. on the X cross). Try wall direction first,
+            # then all 8 compass directions to find any navigable approach point.
             wall_dir = self._forced_approach_dir(bp)
             if wall_dir is not None:
                 ux, uy = wall_dir
-            else:
-                dx, dy = bx - float(robot_pos[0]), by - float(robot_pos[1])
-                dist = math.hypot(dx, dy)
-                ux, uy = (dx / dist, dy / dist) if dist > 1e-6 else (1.0, 0.0)
-            apx = bx - approach_px * ux
-            apy = by - approach_px * uy
-            return not self._is_in_obstacle(apx, apy)
+                if not self._is_in_obstacle(bx - approach_px * ux, by - approach_px * uy):
+                    return True
+            for angle_deg in range(0, 360, 45):
+                rad = math.radians(angle_deg)
+                ux, uy = math.cos(rad), math.sin(rad)
+                if not self._is_in_obstacle(bx - approach_px * ux, by - approach_px * uy):
+                    return True
+            return False
 
         reachable = [bp for bp in ball_positions if _approach_reachable(bp)]
         skipped_balls = [bp for bp in ball_positions if not _approach_reachable(bp)]
