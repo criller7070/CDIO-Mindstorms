@@ -27,8 +27,6 @@ LIFT_SPEED              = 150    # deg/s - lift motor speed
 SPIN_SPEED              = 300    # deg/s - spin motor speed
 GATE_SPEED              = 200    # deg/s - gate motor speed
 GYRO_BRAKE_OFFSET       = 12     # deg  - stop gyro loop this many degrees early to account for motor inertia
-FORWARD_DRIVEBASE_SCALE = 3.2288 # unused on the robot - host/config.py carries the authoritative copy as FORWARD_CMD_SCALE
-DRIVEBASE_TURN_SCALE    = 1.3198 # unused - TURN uses gyro closed-loop or FALLBACK_TURN_RATIO directly
 FORWARD_MM_PER_ROTATION = 62     # mm per motor rotation - actual FORWARD implementation (DriveBase is wired but not used for movement)
 REVERSE_MM_PER_ROTATION = 174    # mm per motor rotation - different from forward because the tracks grip differently going back
 FALLBACK_TURN_RATIO     = 736.5 / 90.0  # motor degrees per physical degree (fallback tank turn)
@@ -42,11 +40,7 @@ class EV3NavController:
         self.ev3.screen.clear()
         self.ev3.screen.print("Init...")
         
-        # 2. Queue for voice commands (run one at a time)
-        self.voice_queue = []
-        self.voice_speaking = False
-
-        # 3. Spinning control
+        # 2. Spinning control
         self.spinning = False
         self.spin_speed = SPIN_SPEED
 
@@ -343,14 +337,11 @@ class EV3NavController:
             elif cmd == "SAY":
                 if value:
                     self._log("SAY: {}".format(value[:15]))
-                    # fire and forget
                     def speak_async():
-                        self.voice_speaking = True
                         try:
                             self.ev3.speaker.say(value)
                         except:
                             pass
-                        self.voice_speaking = False
                     thread = threading.Thread(target=speak_async)
                     thread.daemon = True
                     thread.start()

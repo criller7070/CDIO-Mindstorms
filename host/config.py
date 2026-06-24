@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-Shared constants and colour-range persistence for the vision system.
-All other vision modules import from here.
+shared constants and colour-range persistence for the vision system.
+all other vision modules import from here.
 """
 import os
 import json
 import copy
 
-# ── Camera & paths ────────────────────────────────────────────────────────────
+# CAMERA & PATHS
 CAMERA_INDEX   = 1
 MISSION_FILE   = os.path.join(os.path.dirname(__file__), "..", "robot", "commands.txt")
 SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 MASK_DIR       = os.path.join(SCREENSHOT_DIR, "masks")
 
-# ── Field layout ──────────────────────────────────────────────────────────────
-WALL_MARGIN         = 20
-CENTER_RADIUS       = 0
+# FIELD LAYOUT
+WALL_MARGIN         = 45
+CENTER_RADIUS       = 60
 INITIAL_HEADING_DEG = -90
 HOLE_FRAC_X         = 0.05   # left hole: 5 % from left edge
 HOLE_FRAC_Y         = 0.50   # left hole: 50 % down
 
-# ── Robot physical dimensions (mm) ────────────────────────────────────────────
+# ROBOT DIMENSIONS (mm)
 ROBOT_WIDTH_MM  = 240   # side-to-side across tracks
 ROBOT_LENGTH_MM = 320   # front bumper to back (measured: 110 mm rear + 210 mm to front)
 GATE_ARM_MM     = 90    # each gate arm length; when fully open (90°) each side extends this far
@@ -36,13 +36,13 @@ ARUCO_FROM_BACK_FRAC = 0.344   # 110 / 320
 # generation compensates for it so the robot centre still follows the path.
 ROBOT_PIVOT_OFFSET_MM = ROBOT_LENGTH_MM * (0.5 - 0.25)   # 92.5 mm behind centre
 
-# ── Roboflow YOLO model ───────────────────────────────────────────────────────
+# ROBOFLOW YOLO MODEL
 # Leave empty to fall back to the HoughCircles detector.
 ROBOFLOW_API_KEY   = os.environ.get("ROBOFLOW_API_KEY", "")
 ROBOFLOW_API_URL   = "https://serverless.roboflow.com"
 ROBOFLOW_MODEL_ID  = "ping-pong-finder-w6mxk/9"
 
-# ── HSV calibration ───────────────────────────────────────────────────────────
+# HSV CALIBRATION
 COLOR_RANGES_FILE = os.path.join(os.path.dirname(__file__), "color_ranges.json")
 
 # Shape gates default to OFF (0 thresholds, wide radius) so the raw HSV mask
@@ -67,7 +67,7 @@ DEFAULT_COLOR_RANGES = {
 
 
 def load_color_ranges():
-    """Load calibration from JSON, merged on top of defaults."""
+    """load calibration from JSON, merged on top of defaults."""
     try:
         with open(COLOR_RANGES_FILE, 'r') as f:
             saved = json.load(f)
@@ -83,13 +83,13 @@ def load_color_ranges():
 
 
 def save_color_ranges(ranges):
-    """Persist calibration to JSON."""
+    """persist calibration to JSON."""
     with open(COLOR_RANGES_FILE, 'w') as f:
         json.dump(ranges, f, indent=2)
     print("Calibration saved to: {}".format(COLOR_RANGES_FILE))
 
 
-# ── Control-loop tunables ─────────────────────────────────────────────────────
+# CONTROL-LOOP TUNABLES
 ARRIVE_PX       = 20.0   # waypoint counts as reached within this many pixels.
                          # With DENSIFY_GAP_PX=40px and ACTUAL_PX_PER_MM=1.39,
                          # one forward step = 20mm = 27.8px. Arrival at 20px lets

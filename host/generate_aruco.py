@@ -5,8 +5,6 @@ Generate a printable ArUco marker to put on the robot
 import os
 import sys
 import cv2 # this is where the magic happens
-import numpy as np
-
 
 def generate(marker_id=0, size=600):
     d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)

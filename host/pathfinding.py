@@ -2,11 +2,6 @@
 """
 A* path planner for CDIO golf field.
 
-Finds the optimal order to collect all balls and deliver them to the left hole
-while staying inside the wall margin and away from the center obstacle.
-
-Outputs EV3-compatible TURN/FORWARD/LIFT_DOWN/LIFT_UP commands.
-
 Coordinate system (image space):
   - x increases left → right
   - y increases top  → bottom
@@ -21,9 +16,7 @@ import numpy as np
 from itertools import permutations
 
 
-# -----------------------------------------------------------------------------
-# - Calibration - set FIELD_WIDTH_MM and FIELD_HEIGHT_MM to real measurements -
-# -----------------------------------------------------------------------------
+# CALIBRATION - set FIELD_WIDTH_MM and FIELD_HEIGHT_MM to real measurements
 FIELD_WIDTH_MM = 1670   # field width:  167.0 cm
 FIELD_HEIGHT_MM = 1215  # field height: 121.5 cm
 
@@ -52,19 +45,6 @@ class FieldPlanner:
                  gate_open=True,
                  gate_arm_mm=0.0,
                  aruco_from_back_frac=0.5):
-        """
-        field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
-        center_pos:      (cx, cy) pixel coords of center crosshair
-        wall_margin:     pixels to keep away from walls
-        center_radius:   pixel radius of center no-go zone
-        field_width_mm:  real-world field width in mm (for command distances)
-        field_height_mm: real-world field height in mm
-        field_hull:      optional (N,1,2) cv2 contour of the actual wall shape;
-                         cells outside it are blocked regardless of wall_margin
-        gate_open:       if True, gate arms are horizontal and widen the footprint
-                         by gate_arm_mm on each side
-        gate_arm_mm:     length of each gate arm in mm
-        """
         self.bounds = field_bounds
         self.center = center_pos
         self.wall_margin = wall_margin
@@ -111,9 +91,7 @@ class FieldPlanner:
 
         self.grid = self._build_grid()
 
-    # ------------------------------------------------------------------
-    # Grid construction
-    # ------------------------------------------------------------------
+    # GRID CONSTRUCTION
 
     def _build_grid(self):
         gs = self.GRID_SCALE
@@ -148,9 +126,7 @@ class FieldPlanner:
                     grid[gx][gy] = True
         return grid
 
-    # ------------------------------------------------------------------
-    # Coordinate helpers
-    # ------------------------------------------------------------------
+    # COORDINATE HELPERS
 
     def _to_grid(self, px, py):
         gx = max(0, min(self.gw - 1, (int(px) - self.x0) // self.GRID_SCALE))
@@ -182,15 +158,10 @@ class FieldPlanner:
         free_gx, free_gy = self._nearest_free(gx, gy)
         return self._to_px(free_gx, free_gy)
 
-    # ------------------------------------------------------------------
-    # A* search
-    # ------------------------------------------------------------------
+    # A* SEARCH
 
     def astar(self, start_px, end_px):
-        """
-        Find shortest path from start_px to end_px in pixel space.
-        Returns list of (px, py) tuples, or None if unreachable.
-        """
+        """shortest path from start_px to end_px. returns list of (px, py) or None."""
         s = self._nearest_free(*self._to_grid(*start_px))
         e = self._nearest_free(*self._to_grid(*end_px))
 
@@ -230,15 +201,10 @@ class FieldPlanner:
 
         return None
 
-    # ------------------------------------------------------------------
-    # K-Means++ clustering (capacity-aware multi-trip)
-    # ------------------------------------------------------------------
+    # K-MEANS++ CLUSTERING (capacity-aware multi-trip)
 
     def cluster_balls(self, ball_positions, capacity):
-        """
-        Partition ball_positions into groups of ≤ capacity using K-Means++.
-        Returns list of lists of indices into ball_positions.
-        """
+        """split balls into groups of ≤ capacity using K-Means++. returns list of index lists."""
         n = len(ball_positions)
         k = max(1, -(-n // capacity))  # ceil(n / capacity)
         if k == 1:
@@ -308,9 +274,7 @@ class FieldPlanner:
                     assignments[m] = nearest
         return assignments
 
-    # ------------------------------------------------------------------
-    # Ball pickup routing with straight approach injection
-    # ------------------------------------------------------------------
+    # BALL PICKUP ROUTING
 
     def _forced_approach_dir(self, ball_pos):
         """
@@ -368,19 +332,7 @@ class FieldPlanner:
     _wall_approach_dir = _forced_approach_dir
 
     def _pickup_seg(self, from_pos, ball_pos):
-        """
-        A* path to ball_pos whose final segment is a straight approach aligned
-        with the actual navigated path (not the geometric from→ball line).
-
-        For wall-adjacent balls the approach direction is forced perpendicular to
-        the nearest wall (existing behavior preserved).
-
-        For all other balls: run A* straight to the ball, then walk back
-        BALL_APPROACH_MM along the resulting path to find the approach_point.
-        This guarantees the final straight segment is always obstacle-free
-        (it lies on the A* path itself), fixing approach-angle misalignment
-        for balls near the centre obstacle or in tight spaces.
-        """
+        """A* path to ball_pos with a guaranteed straight BALL_APPROACH_MM final segment."""
         bx, by = float(ball_pos[0]), float(ball_pos[1])
         fx, fy = float(from_pos[0]), float(from_pos[1])
         approach_px = BALL_APPROACH_MM * self.px_per_mm
@@ -423,22 +375,14 @@ class FieldPlanner:
         # Path shorter than approach_px: return as-is (ball very close).
         return seg
 
-    # ------------------------------------------------------------------
-    # Optimal route (pre-compute costs, then brute-force + 2-opt)
-    # ------------------------------------------------------------------
+    # OPTIMAL ROUTE (TSP brute-force for ≤ ~8 balls)
 
     # Brute-force n! is fine on a cost matrix (no A* per permutation).
     # Cap at 9 to keep factorial under ~360k iterations; use 2-opt above.
     _BRUTE_FORCE_LIMIT = 9
 
     def optimal_route(self, robot_pos, ball_positions, dropoff_pos):
-        """
-        Return a good visit order and the corresponding A* path segments.
-
-        Pre-computes O(n²) A* segments once, then:
-          - Brute-force TSP on the cost matrix for n ≤ _BRUTE_FORCE_LIMIT
-          - Nearest-neighbour + 2-opt for larger groups
-        """
+        """best visit order + A* path segments. brute-force ≤ 9 balls, greedy + 2-opt otherwise."""
         n = len(ball_positions)
         if n == 0:
             path = self.astar(robot_pos, dropoff_pos)
@@ -538,9 +482,7 @@ class FieldPlanner:
             total += (dx ** 2 + dy ** 2) ** 0.5
         return total
 
-    # ------------------------------------------------------------------
-    # Path simplification (Ramer-Douglas-Peucker)
-    # ------------------------------------------------------------------
+    # PATH SIMPLIFICATION (Ramer-Douglas-Peucker)
 
     @staticmethod
     def simplify(pts, eps=8):
@@ -564,20 +506,10 @@ class FieldPlanner:
             return left[:-1] + right
         return [pts[0], pts[-1]]
 
-    # ------------------------------------------------------------------
-    # Command generation
-    # ------------------------------------------------------------------
+    # COMMAND GENERATION
 
     def paths_to_commands(self, path_segs, initial_heading_deg=0):
-        """
-        Convert route path segments to EV3 command strings.
-
-        path_segs:           output of optimal_route
-        initial_heading_deg: robot's starting heading in image-space degrees
-                             (-90 = facing up/north, 0 = facing right, 90 = facing down)
-
-        Returns list of command strings for commands.txt.
-        """
+        """convert route segments to EV3 command strings for commands.txt."""
         commands = ["SPEED:300"]
         heading = float(initial_heading_deg)
         n_collect = len(path_segs) - 1  # last segment ends at dropoff
@@ -643,27 +575,14 @@ class FieldPlanner:
             meta.append("# SIM_HULL: {}".format(pairs))
         return meta
 
-    # ------------------------------------------------------------------
-    # Multi-trip planning
-    # ------------------------------------------------------------------
+    # MULTI-TRIP PLANNING
 
     def _segs_to_commands(self, path_segs, is_last_trip, heading, cur_pos,
                           face_deg=None):
-        """
-        Convert one trip's path segments to EV3 commands.
-        Tracks and returns the robot's final heading AND its real (x, y) pixel
-        pose so the next leg/trip continues from where the robot actually
-        stopped (which, after a front-intake collect, is short of the ball
-        centre) instead of from the segment's nominal endpoint.
+        """convert one trip's segments to commands, trimming collect legs to nose-stop.
 
-        cur_pos:  the robot's actual pixel position at the start of these segs.
-        face_deg: if set, a TURN to this heading is inserted before STOP on
-                  the last trip so the robot faces the hole when it arrives.
-
-        Returns (commands, heading, cur_pos, driven_segs), where driven_segs is
-        the list of actual traversed polylines (one per leg, after the start
-        override and the collect trim) so the debug overlay can draw exactly
-        what the robot does.
+        returns (commands, heading, cur_pos, driven_segs) so the next trip starts
+        from the real stopped position, not the segment's nominal endpoint.
         """
         commands = []
         driven_segs = []
@@ -771,18 +690,7 @@ class FieldPlanner:
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
                    capacity=6, initial_heading_deg=0, face_deg=None):
-        """
-        Capacity-aware multi-trip planner. Handles any number of balls.
-
-        - Balls are clustered into trips of ≤ capacity using K-Means++.
-        - The best cluster to do first (closest to robot_pos) is chosen by
-          trying all k candidates and picking the lowest total A* cost.
-        - Remaining trips all start and end at dropoff_pos; their internal
-          order is optimised independently by brute-force permutation (≤ capacity!).
-        - Heading is threaded across all trips so TURN commands are correct.
-
-        Returns a list of EV3 command strings ready to write to commands.txt.
-        """
+        """multi-trip planner: clusters balls, picks best first trip, routes each optimally."""
         meta = self._sim_metadata(robot_pos, dropoff_pos)
 
         # A ball is reachable if:
@@ -906,23 +814,11 @@ class FieldPlanner:
         self._debug_ball_order = debug_order
         return commands
 
-    # ------------------------------------------------------------------
-    # Debug visualization
-    # ------------------------------------------------------------------
+    # DEBUG VISUALIZATION
 
     def debug_overlay(self, frame, path_segs, robot_pos, ball_positions,
                       dropoff_pos, ball_order, skipped=None):
-        """Draw the planned route on a copy of frame for visual inspection.
-
-        path_segs are the ACTUAL driven polylines (trimmed to the nose-stops),
-        so collect legs end half a body length short of the ball centre - the
-        visible gap is exactly the front-intake reach.
-
-        ball_positions must be the REACHABLE list that ball_order indexes into.
-        skipped (optional) is the list of balls dropped as unreachable (inside
-        the wall/centre keep-out); they are drawn greyed-out so it's obvious the
-        route ignores them.
-        """
+        """draw the planned route on a copy of frame for visual inspection."""
         import cv2
         vis = frame.copy()
         colors = [(0, 255, 255), (255, 128, 0), (128, 0, 255)]
