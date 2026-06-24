@@ -588,14 +588,19 @@ def run_live(camera_index, link):
         dist = _ball_dist(waypoint)
 
         if gate_state['open']:
-            # track closest approach while gate is open
+            gate_state['steps_open'] = gate_state.get('steps_open', 0) + 1
             if dist < gate_state['min_ball_dist']:
                 gate_state['min_ball_dist'] = dist
-            # close when distance starts increasing — robot has passed the ball
-            elif dist > gate_state['min_ball_dist'] + 15:
+            # close if ball is inside arm zone, OR robot has passed the ball
+            close_now = (
+                (dist < BALL_GATE_THRESHOLD_PX and gate_state['steps_open'] >= 1)
+                or dist > gate_state['min_ball_dist'] + 15
+            )
+            if close_now:
                 link.send_and_wait("GATE_CLOSE:{}".format(GATE_CLOSE_DEG))
                 gate_state['open'] = False
                 gate_state['min_ball_dist'] = float('inf')
+                gate_state['steps_open'] = 0
                 nearest_idx = min(range(len(gate_state['ball_pxs'])),
                                   key=lambda i: math.hypot(
                                       waypoint[0] - gate_state['ball_pxs'][i][0],
@@ -603,13 +608,14 @@ def run_live(camera_index, link):
                 collected_pos = gate_state['ball_pxs'].pop(nearest_idx)
                 gate_state['collected'].append(collected_pos)
                 print("[GATE] COLLECT at {:.0f}px (min {:.0f}px) - {} collected".format(
-                    dist, gate_state['min_ball_dist'] + 15, len(gate_state['collected'])))
+                    dist, gate_state['min_ball_dist'], len(gate_state['collected'])))
 
         elif dist < GATE_PRE_OPEN_PX:
             # pre-open: robot approaching ball, open gate so ball can enter
             link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
             gate_state['open'] = True
             gate_state['min_ball_dist'] = dist
+            gate_state['steps_open'] = 0
             print("[GATE] PRE-OPEN at {:.0f}px from ball".format(dist))
 
         # dropoff: partial-open gate then tip the tray to roll balls into the hole.
