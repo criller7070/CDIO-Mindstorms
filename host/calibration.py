@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-live HSV calibration - library module.
-call run_calibration(cap, color_ranges) to open the trackbar UI.
-modifies color_ranges in-place so the detector sees changes immediately.
-
-controls panel is customtkinter (modern look on Linux + Windows).
-camera preview still uses cv2.imshow.
-"""
 import cv2
 import numpy as np
 import customtkinter as ctk
@@ -60,12 +52,11 @@ def _save(color, color_ranges, h_min, h_max, s_min, s_max, v_min, v_max):
             color_ranges['ORANGE']['mean_h_min'] = max(0,   h_min - 2)
             color_ranges['ORANGE']['mean_h_max'] = min(179, h_max + 5)
     save_color_ranges(color_ranges)
-    print("Saved {} → lower={} upper={}".format(
+    print("Saved {} to lower={} upper={}".format(
         color, color_ranges[color]['lower'], color_ranges[color]['upper']))
 
 
 def run_calibration(cap, color_ranges):
-    """open slider panel + live preview to tune HSV ranges. N=next color, S=save, Q=quit."""
     color_idx  = [0]
     running    = [True]
     after_id   = [None]

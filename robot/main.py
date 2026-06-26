@@ -455,7 +455,7 @@ class EV3NavController:
                     return False
             
             elif cmd == "DROPOFF":
-                # gate_deg:lift_deg — open gate and lift tray simultaneously
+                # gate_deg:lift_deg - open gate and lift tray simultaneously
                 parts = value.split(":")
                 gate_deg = int(parts[0]) if len(parts) > 0 and parts[0] else 90
                 lift_deg = int(parts[1]) if len(parts) > 1 and parts[1] else 150
@@ -672,7 +672,7 @@ def run_diagnostics():
             # nudge it to confirm it's not just detected but actually responsive
             motor.run_angle(100, 90, wait=True)
             motor.reset_angle(0)
-            print("  → Motor responsive (moved 90°)")
+            print("  to Motor responsive (moved 90 deg)")
         except Exception as e:
             print("[NOT FOUND] {} - {}".format(port_name, str(e)[:40]))
     

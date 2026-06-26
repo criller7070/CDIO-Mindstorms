@@ -38,7 +38,6 @@ while True:
     analysis = det.analyze_course(frame)
     vis = frame.copy()
 
-    # Field bounds
     if not analysis['field_detected']:
         cv2.putText(vis, "No field", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         cv2.imshow("Ball Route - Q to quit", vis)
@@ -52,12 +51,10 @@ while True:
     balls = analysis['balls']
     ball_positions = [(b['x'], b['y']) for b in balls]
 
-    # Draw all balls first (unordered)
     for b in balls:
         color = (0, 165, 255) if b['color'] == 'ORANGE' else (200, 200, 200)
         cv2.circle(vis, (b['x'], b['y']), b.get('radius', 8), color, 2)
 
-    # Plan route if we have balls and a robot pose
     robot_pose = det.detect_robot(frame)
     robot_pos = (robot_pose[0], robot_pose[1]) if robot_pose is not None else None
     now = time.monotonic()
@@ -109,7 +106,6 @@ while True:
             ball_positions_used = getattr(planner, '_debug_ball_positions', ball_positions)
             skipped = getattr(planner, '_debug_skipped_balls', [])
 
-            # Draw obstacle grid (red tint over blocked cells)
             gs = planner.GRID_SCALE
             for gx in range(planner.gw):
                 for gy in range(planner.gh):
@@ -118,18 +114,15 @@ while True:
                         py2 = planner.y0 + gy * gs
                         cv2.rectangle(vis, (px2, py2), (px2 + gs, py2 + gs), (0, 0, 80), -1)
 
-            # Mark skipped balls in red
             for sx, sy in skipped:
                 cv2.circle(vis, (int(sx), int(sy)), 12, (0, 0, 255), 2)
                 cv2.putText(vis, "X", (int(sx) - 4, int(sy) + 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-            # Draw actual A* path segments (shows perpendicular approach)
+            # Draw actual A* path segments
             debug_segs = [list(s) for s in getattr(planner, '_debug_path_segs', [])]
-            # Append clean approach_wp → dropoff segment (no snap, no kink)
             if debug_segs:
                 debug_segs.append([approach_wp, dropoff])
-            # Last 2 segs are the dropoff (A*→approach_wp + approach_wp→wall)
             n_collect = max(0, len(debug_segs) - 2)
             for leg, seg in enumerate(debug_segs):
                 color = (0, 255, 255) if leg < n_collect else (0, 100, 255)
@@ -150,7 +143,7 @@ while True:
             cv2.putText(vis, "DROP", (int(dropoff[0]) + 5, int(dropoff[1])),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 100, 255), 2)
 
-            # Console route printout
+            # Console printout
             print("\nRoute: robot", end="")
             for step, idx in enumerate(ball_order):
                 bx, by = int(ball_positions_used[idx][0]), int(ball_positions_used[idx][1])
@@ -162,7 +155,6 @@ while True:
         except Exception as e:
             print("Plan error:", e)
 
-    # Overlay cached route lines on fresh frame
     if cached_vis is not None:
         vis = cached_vis.copy()
 

@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-transport links - all expose send_and_wait(cmd) -> bool.
-
-BluetoothLink  legacy Bluetooth via tools_mission_sender
-TCPLink        WiFi over TCP (primary, matches ev3_server.py --tcp)
-SimLink        virtual robot for offline loop testing
+transport links, BluetoothLink, TCPLink, SimLink etc
 """
 import math
 import time
@@ -100,8 +96,8 @@ class TCPLink:
 
 
 class SimLink:
-    """virtual robot for testing the loop offline. models FORWARD/TURN/REVERSE with optional gain error."""
-
+    """virtual robot for testing the loop offline
+    """
     def __init__(self, pose, px_per_mm, turn_gain=1.0, fwd_gain=1.0,
                  lateral_noise_mm=0.0, turn_overshoot_deg=0.0, seed=0):
         self.x, self.y, self.heading = pose

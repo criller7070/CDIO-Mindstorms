@@ -1,5 +1,6 @@
 #!/bin/bash
 # restart script; called over SSH by loop.py when it needs a mid-session restart.
+# THIS IS NOT THE ENTRY-POINT! run ev3_server.py on robot, then loop.py on host PC
 #
 # kills only our processes (pybricks-micropython + ev3_server).
 # brickrun exits naturally once its child is gone.

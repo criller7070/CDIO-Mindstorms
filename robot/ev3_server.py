@@ -1,27 +1,6 @@
 #!/usr/bin/env python3
 """
-EV3 Bluetooth bridge for CLOSED-LOOP control.
-
-Runs under ev3dev's python3 (PyBluez), the same runtime as the old
-ev3_receiver.py.  It keeps a persistent Bluetooth connection to the PC and,
-for every command line it receives, hands that single command to the pybricks
-executor (robot/main.py --follow) through two tiny files and returns the
-executor's DONE acknowledgement to the PC.
-
-Why two processes?  Motor control here uses pybricks-micropython, while
-Bluetooth uses python3/PyBluez - two different interpreters that can't share a
-process.  They cooperate through a sequence-numbered file bridge:
-
-    cl_cmd.txt : "<seq> <COMMAND>"   written here, read by the executor
-    cl_ack.txt : "<seq> DONE"        written by the executor, read here
-
-Start BOTH on the EV3 (order doesn't matter):
-
-    python3 robot/ev3_server.py --tcp        # TCP/WiFi  (default port 9999)
-    python3 robot/ev3_server.py              # Bluetooth (RFCOMM)
-    brickrun -- pybricks-micropython robot/main.py --follow
-
-Then run host/loop.py on the PC (use --tcp <robot-ip> or --profile <name> to match).
+Run this TCP or bluetooth server on the EV3, then loop.py on your own machine
 """
 import os
 import sys
@@ -61,9 +40,6 @@ def wait_for_ack(seq, timeout=ACK_TIMEOUT):
 
 
 def serve(client, seq):
-    """handle one PC connection. seq must keep increasing across reconnects -
-    restarting at 1 could collide with what the executor already processed.
-    returns the updated counter."""
     buf = ""
     while True:
         data = client.recv(1024)
@@ -108,8 +84,6 @@ def make_bluetooth_server():
 
 
 def main():
-    # resume counter from disk so a restart never reuses a seq the executor
-    # already processed. only seed files when missing - don't clobber a live ack.
     seq = read_seq(CMD_FILE)
     if seq < 0:
         seq = 0

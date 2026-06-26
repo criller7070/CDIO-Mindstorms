@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 ball and field detection engine. no UI code lives here.
-receives a shared color_ranges dict; mutations (e.g. from calibration)
-are reflected immediately because Python dicts are passed by reference.
 """
 import base64
 import cv2
@@ -13,8 +11,6 @@ import requests
 
 
 class _RoboflowClient:
-    """minimal Roboflow serverless inference client using plain HTTP (no inference_sdk)."""
-
     def __init__(self, api_url, api_key):
         self._api_url = api_url.rstrip('/')
         self._api_key = api_key
@@ -43,7 +39,7 @@ class BallDetector:
                 api_key=roboflow_api_key,
             )
             print("Roboflow YOLO backend active ({})".format(roboflow_model_id))
-            # background thread so the main loop never blocks on network I/O.
+            # background thread
             self._yolo_latest_frame  = None   # frame waiting to be processed
             self._yolo_cached_result = []     # last good prediction list
             self._yolo_lock  = threading.Lock()
@@ -62,48 +58,29 @@ class BallDetector:
         self._center_ema        = None   # smoothed centre position (x, y)
         self._center_r_ema      = None   # smoothed centre marker radius (px)
 
-        # CLAHE normalises the V channel locally (8×8 tiles) so that one
-        # dark corner and one bright corner of the field produce similar V
-        # values for the same physical colour.  One instance, reused every
-        # frame to avoid repeated allocation.
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         # ROBOT POSE (ArUco marker)
-        # the closed-loop controller reads the robot's live pose from a single
-        # ArUco marker mounted flat on top of the robot. mount it so the
-        # marker's TOP edge points toward the robot's FRONT; set
-        # robot_heading_offset_deg for any other mounting rotation.
-        self.robot_marker_id          = None   # None = use first marker found
+        self.robot_marker_id          = None
         self.robot_heading_offset_deg = 0.0
         try:
-            # DICT_4X4_1000 matches the marker generator and chev.me "4x4 (1000)".
-            # (low ids like 0 are identical across all 4X4 dicts, so older 4x4_50
-            #  markers still work too.)
             _adict  = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)
             _aparams = cv2.aruco.DetectorParameters()
             self._aruco_detector = cv2.aruco.ArucoDetector(_adict, _aparams)
         except Exception:
-            # opencv-python (non-contrib) or an old API: robot detection disabled.
             self._aruco_detector = None
 
     def _to_hsv(self, frame):
-        """BGR → HSV with CLAHE on V so thresholds work across uneven lighting."""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
         v = self._clahe.apply(v)
         return cv2.merge([h, s, v])
 
     # PUBLIC API
-
-    # pixels a ball centre must be inside the red-wall bounding box.
-    # raised enough to exclude detections sitting ON the wall surface.
     FIELD_INSET = 10
-
-    # pixels around the robot marker centre to exclude from ball detection.
     ROBOT_EXCLUSION_R = 50
 
     def analyze_course(self, frame):
-        """run all detections and return a single result dict."""
         balls, mask_white, mask_orange = self.detect_balls(frame)
         red_walls    = self.detect_red_walls(frame)
         fh, fw = frame.shape[:2]
@@ -126,8 +103,6 @@ class BallDetector:
             field_bounds = (20, 20, fw - 20, fh - 20)
             field_hull   = None
 
-        # remove any "ball" whose centre falls inside the robot body - the
-        # white ArUco marker frame creates circular Hough artefacts.
         robot_pose = self.detect_robot(frame)
         if robot_pose is not None:
             rx, ry, _ = robot_pose
@@ -156,7 +131,6 @@ class BallDetector:
         }
 
     def detect_robot(self, frame):
-        """detect robot pose from ArUco marker. returns (x, y, heading_deg) or None."""
         if self._aruco_detector is None:
             return None
 
@@ -184,13 +158,11 @@ class BallDetector:
         heading = float(np.degrees(np.arctan2(fy, fx))) + self.robot_heading_offset_deg
         heading = (heading + 180.0) % 360.0 - 180.0
 
-        # marker perimeter in pixels - larger = marker is close/well-lit and readable.
         perimeter = float(np.sum(np.linalg.norm(np.diff(quad, axis=0, append=quad[:1]), axis=1)))
         self._last_marker_perimeter = perimeter
 
         return (int(round(cx)), int(round(cy)), heading)
 
-    # EMA weight for centre smoothing (0 = frozen, 1 = no smoothing).
     CENTER_SMOOTHING = 0.3
 
     def _detect_center(self, red_cnts, field_bounds, field_detected):
@@ -210,7 +182,6 @@ class BallDetector:
                 area = M['m00']
                 if area == 0:
                     continue
-                # skip the field-boundary contour and tiny noise specks.
                 if area > 0.15 * field_area or area < 40:
                     continue
                 ccx = M['m10'] / area
@@ -253,7 +224,7 @@ class BallDetector:
         thicknesses = []
 
         for frac in (0.25, 0.375, 0.50, 0.625, 0.75):
-            # horizontal row: measure left- and right-wall thickness
+            # horizontal row
             y = max(0, min(h - 1, int(y0 + (y1 - y0) * frac)))
             row = red_mask[y, max(0, x0):min(w, x1)]
             zeros_l = np.where(row == 0)[0]
@@ -263,7 +234,7 @@ class BallDetector:
             if len(zeros_r):
                 thicknesses.append(int(zeros_r[0]))
 
-            # vertical column: measure top- and bottom-wall thickness
+            # vertical column
             x = max(0, min(w - 1, int(x0 + (x1 - x0) * frac)))
             col = red_mask[max(0, y0):min(h, y1), x]
             zeros_t = np.where(col == 0)[0]
@@ -280,8 +251,7 @@ class BallDetector:
     def detect_balls(self, frame):
         """return (balls, raw_white_mask, raw_orange_mask)."""
         hsv = self._to_hsv(frame)
-
-        # keep raw HSV masks for calibration visualisation - not used for detection.
+        # keep raw HSV masks
         cr_w = self.color_ranges['WHITE']
         cr_o = self.color_ranges['ORANGE']
         raw_white  = cv2.inRange(hsv, np.array(cr_w['lower']), np.array(cr_w['upper']))
@@ -304,7 +274,7 @@ class BallDetector:
     YOLO_CALL_INTERVAL = 0.25
 
     def _yolo_worker(self):
-        """background thread: process the latest queued frame and cache result."""
+        """background thread"""
         last_call = 0.0
         while True:
             self._yolo_event.wait()
@@ -345,7 +315,6 @@ class BallDetector:
                 self._yolo_cached_result = balls
 
     def _find_balls_yolo(self, frame):
-        """submit frame to background worker; return last cached result immediately."""
         with self._yolo_lock:
             self._yolo_latest_frame = frame
             cached = list(self._yolo_cached_result)
@@ -353,7 +322,6 @@ class BallDetector:
         return cached
 
     def _find_balls_hough(self, hsv, frame_shape):
-        """detect balls via HoughCircles on the V channel, classify by mean HSV."""
         fh, fw = frame_shape
         cr_w = self.color_ranges['WHITE']
         cr_o = self.color_ranges['ORANGE']
@@ -404,21 +372,6 @@ class BallDetector:
         return balls
 
     def detect_hole_markers(self, frame, field_bounds=None):
-        """Detect dropoff-hole ArUco markers in the frame.
-
-        Returns a list of dicts, one per detected non-robot marker:
-            {'id': int, 'x': int, 'y': int, 'heading_deg': float, 'approach_deg': float}
-
-        'approach_deg' is the heading the robot should face when arriving at the
-        hole — opposite to the direction the marker faces into the field.  Assumes
-        each hole marker is mounted with its TOP edge pointing inward (into the
-        field), so the robot approaches from inside the field facing the marker.
-
-        field_bounds: (x0, y0, x1, y1) pixel bounds of the field.  When provided,
-        markers that are NOT near the left or right wall are silently dropped —
-        this filters out the robot's own ArUco marker without requiring robot_marker_id
-        to be set.
-        """
         if self._aruco_detector is None:
             return []
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -436,10 +389,6 @@ class BallDetector:
             cx = float(quad[:, 0].mean())
             cy = float(quad[:, 1].mean())
 
-            # When we know the field bounds, filter to markers near the left or
-            # right wall (within 20 % of the field width from each side).  This
-            # rejects the robot's marker — which is somewhere in the middle —
-            # without needing robot_marker_id to be explicitly configured.
             if field_bounds is not None:
                 x0, y0, x1, y1 = field_bounds
                 wall_zone = (x1 - x0) * 0.20
@@ -451,7 +400,6 @@ class BallDetector:
             heading = float(np.degrees(np.arctan2(fy, fx)))
             heading = (heading + 180.0) % 360.0 - 180.0
 
-            # Robot faces the marker from inside the field, i.e. opposite direction.
             approach = (heading + 180.0) % 360.0
             if approach > 180.0:
                 approach -= 360.0
@@ -466,7 +414,6 @@ class BallDetector:
         return holes
 
     def detect_red_walls(self, frame):
-        """return dict with mask, edges, and Hough lines for the red boundary."""
         hsv = self._to_hsv(frame)
         cr  = self.color_ranges['RED']
         m1  = cv2.inRange(hsv, np.array(cr['lower']),  np.array(cr['upper']))
@@ -490,7 +437,6 @@ class BallDetector:
 
     @staticmethod
     def _is_valid_field_mask(mask, frame_h, frame_w):
-        """true when the red mask looks like a real field boundary, not noise."""
         if int(np.count_nonzero(mask)) < 500:
             return False
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

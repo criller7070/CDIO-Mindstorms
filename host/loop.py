@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
 """
-closed-loop navigation controller (host PC).
-
-instead of computing a whole mission and dead-reckoning it (open-loop, which
-drifts as small per-command errors accumulate), this drives the robot ONE small
-move at a time while continuously watching it through the camera:
-
-    observe robot pose (ArUco)  ->  compare to next waypoint  ->  send ONE move
-            ^                                                          |
-            +----------------  wait for the robot's DONE  <-----------+
-
-because the host re-measures the robot's real position and heading after every
-single move, translation/heading errors are corrected before they grow, so the
-robot stays on the planned path.
-
-modes:
-    python loop.py                 # live: camera + TCP
-    python loop.py --probe         # just print live ArUco pose
-    python loop.py --plan-only     # plan from one frame, show path
-    python loop.py --sim           # validate the loop, no hardware
-    python loop.py --camera 0      # override camera index
-
-requires an ArUco marker on the robot - see host/generate_aruco.py.
+run this closed-loop navigation controller (host PC). Then the
+ev3_server on the EV3
 """
 import os
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -57,7 +37,7 @@ def plan_waypoints(detector, frame, robot_pos):
     x_min, y_min, x_max, y_max = analysis['field_bounds']
     center_pos    = analysis['center_pos']
     wall_margin   = analysis['wall_margin'] or WALL_MARGIN
-    # minEnclosingCircle on X arms measures tip-to-tip, so cap to avoid over-blocking.
+    
     detected_r = analysis.get('center_radius') or CENTER_RADIUS
     center_radius = min(detected_r, CENTER_RADIUS) + CENTER_OBSTACLE_EXTRA_PX
     print("X obstacle: raw_r={}px  capped_r={}px  base_r={}px".format(
@@ -65,7 +45,6 @@ def plan_waypoints(detector, frame, robot_pos):
 
     hole_markers = detector.detect_hole_markers(frame, analysis['field_bounds'])
     if hole_markers:
-        # Sort ascending by x: leftmost = Goal A (higher point value), prefer it.
         best = sorted(hole_markers, key=lambda m: m['x'])[0]
         raw_dropoff = (best['x'], best['y'])
         face_deg = best['approach_deg']
@@ -97,11 +76,7 @@ def plan_waypoints(detector, frame, robot_pos):
     print("Footprint: half_w={:.0f}px  half_l={:.0f}px  eff_w={:.0f}px  center_clr={:.0f}px".format(
         planner.robot_half_width_px, planner.robot_half_length_px,
         planner.effective_half_width_px, planner.center_clearance_px))
-    # Compute the dropoff approach waypoint — 100 px behind raw_dropoff in the
-    # face_deg direction.  This point is always inside the navigable zone, so A*
-    # can reach it without snapping.  plan_waypoints now builds the full final
-    # segment (A*→approach_wp→raw_dropoff) internally; callers must NOT call
-    # _add_dropoff_approach a second time.
+    
     _fr = math.radians(face_deg)
     _offset = 100.0
     approach_wp = (raw_dropoff[0] - _offset * math.cos(_fr),
@@ -121,7 +96,7 @@ def plan_waypoints(detector, frame, robot_pos):
     segs = getattr(planner, '_debug_path_segs', [])
     order = getattr(planner, '_debug_ball_order', [])
     positions = getattr(planner, '_debug_ball_positions', ball_positions)
-    # build rank dict: (x,y) -> 1-based visit rank so renderer can label correctly
+    
     visit_rank = {}
     if order:
         print("Ball visit order: " + " ".join(
@@ -131,14 +106,13 @@ def plan_waypoints(detector, frame, robot_pos):
             pos = positions[idx]
             visit_rank[(int(round(pos[0])), int(round(pos[1])))] = rank
     waypoints = _flatten_segs(segs)
-    # Append the actual wall position as the final step after the approach wp.
+    
     if waypoints:
         waypoints.append((float(raw_dropoff[0]), float(raw_dropoff[1])))
     return waypoints, planner, analysis, raw_dropoff, face_deg, visit_rank
 
 
 def _flatten_segs(segs, min_gap_px=6.0):
-    """concatenate planner polylines into one ordered, de-duplicated waypoint list."""
     pts = []
     for seg in segs:
         for p in seg:
@@ -149,7 +123,6 @@ def _flatten_segs(segs, min_gap_px=6.0):
 
 
 def _add_dropoff_approach(waypoints, dropoff, face_deg=180.0, offset_px=100):
-    """insert a waypoint offset_px behind dropoff (opposite face_deg) so the robot is aligned before the final approach."""
     if len(waypoints) < 2:
         return waypoints
     dx, dy = dropoff
@@ -161,7 +134,6 @@ def _add_dropoff_approach(waypoints, dropoff, face_deg=180.0, offset_px=100):
 
 
 def _build_obstacle_overlay(planner, frame_shape):
-    """pre-render the A* obstacle grid into a BGR image for blending into the live feed."""
     h, w = frame_shape[:2]
     overlay = np.zeros((h, w, 3), dtype=np.uint8)
     gs = planner.GRID_SCALE
@@ -174,7 +146,6 @@ def _build_obstacle_overlay(planner, frame_shape):
 
 
 def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
-    """insert intermediate checkpoints so no gap exceeds max_gap_px."""
     if len(waypoints) < 2:
         return list(waypoints)
     dense = [waypoints[0]]
@@ -193,8 +164,6 @@ def _densify_waypoints(waypoints, max_gap_px=DENSIFY_GAP_PX):
 
 # CAMERA POSE SOURCE
 class CameraPoseSource:
-    """grabs frames on a background thread so pose is always fresh even while send_and_wait() blocks."""
-
     def __init__(self, cap, detector, flip=True, show=True):
         self.cap = cap
         self.detector = detector
@@ -203,10 +172,10 @@ class CameraPoseSource:
         self.aborted = False
         self.target = None
         self.waypoints = None
-        self.ball_pxs = []      # [(x,y), ...] updated from gate_state during run
-        self.hole_markers = []  # [{'id':int,'x':int,'y':int,'approach_deg':float}, ...]
-        self.footprint = {}          # set after planning: half_w, half_l, eff_w, center_clr (px)
-        self.obstacle_overlay = None  # pre-rendered obstacle grid image, blended into every frame
+        self.ball_pxs = []
+        self.hole_markers = []
+        self.footprint = {}
+        self.obstacle_overlay = None
         self._lock = threading.Lock()
         self._latest_frame = None
         self._latest_pose = None
@@ -317,12 +286,11 @@ class CameraPoseSource:
                 hl = fp.get('half_l', 0)
                 hw = fp.get('half_w', 0)
                 ew = fp.get('eff_w', 0)
-                # ArUco is at ARUCO_FROM_BACK_FRAC along the body (0=back, 1=front).
-                # geometric centre is at 50%, so it sits (50%-frac)*length ahead of ArUco.
+                
                 aruco_to_center = (0.5 - ARUCO_FROM_BACK_FRAC) * hl * 2
                 cx = x + fwd[0] * aruco_to_center
                 cy = y + fwd[1] * aruco_to_center
-                # robot body box (cyan)
+                
                 body_corners = np.array([
                     [cx + fwd[0]*hl + perp[0]*hw,  cy + fwd[1]*hl + perp[1]*hw],
                     [cx + fwd[0]*hl - perp[0]*hw,  cy + fwd[1]*hl - perp[1]*hw],
@@ -330,7 +298,7 @@ class CameraPoseSource:
                     [cx - fwd[0]*hl + perp[0]*hw,  cy - fwd[1]*hl + perp[1]*hw],
                 ], dtype=np.int32)
                 cv2.polylines(vis, [body_corners], True, (0, 220, 220), 1)
-                # effective footprint box incl. open gate arms (blue-white)
+                
                 if ew > hw:
                     eff_corners = np.array([
                         [cx + fwd[0]*hl + perp[0]*ew,  cy + fwd[1]*hl + perp[1]*ew],
@@ -339,7 +307,7 @@ class CameraPoseSource:
                         [cx - fwd[0]*hl + perp[0]*ew,  cy - fwd[1]*hl + perp[1]*ew],
                     ], dtype=np.int32)
                     cv2.polylines(vis, [eff_corners], True, (255, 200, 0), 1)
-            # centre dot + heading arrow
+            
             cv2.circle(vis, (x, y), 4, (0, 255, 0), -1)
             cv2.line(vis, (x, y),
                      (int(x + 35 * fwd[0]), int(y + 35 * fwd[1])),
@@ -375,7 +343,7 @@ def _open_camera(index):
 
 
 def run_probe(camera_index):
-    """print live ArUco pose to console. no robot connection - just verify tracking."""
+    
     detector = BallDetector(load_color_ranges())
     cap = _open_camera(camera_index)
     if not cap.isOpened():
@@ -420,9 +388,7 @@ def run_plan_only(camera_index):
     if not cap.isOpened():
         print("ERROR: camera index {} did not open.".format(camera_index))
         return
-    # warm up YOLO: the background thread won't make its first API call until
-    # YOLO_CALL_INTERVAL seconds have elapsed, so grab frames for that long.
-    # ball_confirm_frames=1 so a single YOLO response is enough to confirm a ball.
+    # warm up YOLO
     detector.ball_confirm_frames = 1
     yolo_mode = getattr(detector, '_roboflow_client', None) is not None
     warmup_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.3
@@ -491,9 +457,6 @@ def run_live(camera_index, link):
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     # warm up ball detection before planning.
-    # with Roboflow the worker thread enforces YOLO_CALL_INTERVAL before its first
-    # API call, so we must wait for the cache to populate.
-    # with HoughCircles we just need enough frames to pass ball_confirm_frames.
     detector.ball_confirm_frames = 1
     yolo_mode = getattr(detector, '_roboflow_client', None) is not None
     wait_s = (detector.YOLO_CALL_INTERVAL + 0.5) if yolo_mode else 0.0
@@ -546,8 +509,7 @@ def run_live(camera_index, link):
         source.stop(); cap.release(); cv2.destroyAllWindows(); return
 
     link.send_and_wait("SPEED:500")
-    # gate starts at closed position (manually placed); no command needed.
-
+    
     def get_pose():
         if source.aborted:
             return None
@@ -612,18 +574,18 @@ def run_live(camera_index, link):
                     dist, gate_state['min_ball_dist'], len(gate_state['collected'])))
 
         elif dist < GATE_PRE_OPEN_PX:
-            # pre-open: robot approaching ball, open gate so ball can enter
+            # pre-open
             link.send_and_wait("GATE_OPEN:{}".format(GATE_OPEN_DEG))
             gate_state['open'] = True
             gate_state['min_ball_dist'] = dist
             gate_state['steps_open'] = 0
             print("[GATE] PRE-OPEN at {:.0f}px from ball".format(dist))
 
-        # dropoff: open gate and tip tray simultaneously to roll balls into the hole.
+        # dropoff
         if idx == len(wps) - 1:
             link.send_and_wait("DROPOFF:{}:{}".format(GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG))
             gate_state['open'] = True
-            print("[DROPOFF] gate={}° lift={}° motor deg".format(GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG))
+            print("[DROPOFF] gate={} deg lift={} deg motor deg".format(GATE_DROPOFF_DEG, LIFT_DROPOFF_DEG))
 
     def replan():
         f = source.grab()
@@ -671,7 +633,6 @@ def run_live(camera_index, link):
 
 
 def run_sim():
-    """validate the control loop with no hardware: a simulated robot + drift."""
     px_per_mm = 0.35
     waypoints = [(100.0, 400.0), (250.0, 250.0), (450.0, 300.0),
                  (520.0, 120.0), (300.0, 100.0)]
@@ -708,11 +669,7 @@ def run_sim():
 
 
 def _restart_robot(host, ssh_user="robot"):
-    """kill stale pybricks/bridge, reset IPC, restart both, wait for ready.
-
-    called automatically when using --profile or --tcp so the user only
-    needs to run loop.py once - no manual SSH cleanup required.
-    """
+    """kill stale pybricks/bridge, reset IPC, restart both, wait for ready."""
     import subprocess
 
     target = "{}@{}".format(ssh_user, host)
@@ -741,10 +698,7 @@ def _restart_robot(host, ssh_user="robot"):
 
     print("--- Robot restart ({}) ---".format(host))
 
-    # fire restart.sh and don't wait for SSH to return.
-    # Windows SSH.exe can hold open after backgrounding processes on the robot;
-    # avoiding wait entirely sidesteps the issue. the script takes ~4s to
-    # finish; we then poll main.log directly.
+    # fire restart.sh
     try:
         subprocess.Popen(
             ssh_base + [target, "bash /home/robot/restart.sh"],
@@ -758,7 +712,7 @@ def _restart_robot(host, ssh_user="robot"):
     print("Restart triggered, waiting for EV3 to boot...")
     time.sleep(8)  # restart.sh takes ~4s; give brickrun time to start writing
 
-    # poll main.log until "Follow loop ready", printing new lines as they arrive.
+    # listen to main.log until "Follow loop ready"
     print("Waiting for EV3...")
     deadline = time.monotonic() + 55
     last_len = 0

@@ -67,13 +67,13 @@ Logitech USB camera on host PC for ball detection.
 |---|---|---|
 | `FORWARD` | `FORWARD:500` | Move forward N mm |
 | `REVERSE` | `REVERSE:300` | Move backward N mm |
-| `TURN` | `TURN:90` | Turn right N° (negative = left) |
+| `TURN` | `TURN:90` | Turn right N deg (negative = left) |
 | `SPEED` | `SPEED:200` | Set speed in mm/s |
 | `STOP` | `STOP` | Stop all movement |
-| `LIFT_UP` | `LIFT_UP:180` | Raise collection lift N° |
-| `LIFT_DOWN` | `LIFT_DOWN:180` | Lower collection lift N° |
-| `GATE_OPEN` | `GATE_OPEN:90` | Open delivery gate N° |
-| `GATE_CLOSE` | `GATE_CLOSE:20` | Close delivery gate N° |
+| `LIFT_UP` | `LIFT_UP:180` | Raise collection lift N deg |
+| `LIFT_DOWN` | `LIFT_DOWN:180` | Lower collection lift N deg |
+| `GATE_OPEN` | `GATE_OPEN:90` | Open delivery gate N deg |
+| `GATE_CLOSE` | `GATE_CLOSE:20` | Close delivery gate N deg |
 | `SHAKE_LIFT` | `SHAKE_LIFT` | Shake lift to settle balls |
 | `SAY` | `SAY:hello` | EV3 text-to-speech |
 | `#` | `# comment` | Comment, ignored by controller |
