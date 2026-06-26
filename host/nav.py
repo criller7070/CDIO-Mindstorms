@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Core navigation loop.
+core navigation loop.
 
 follow_path()     drives the robot through a waypoint list using live pose feedback.
 _turn_command()   converts a heading error into a compensated TURN:N command.
@@ -16,10 +16,7 @@ from config import (
 
 
 def _turn_command(err_deg):
-    """Compensated TURN command so the robot actually rotates ~err_deg.
-
-    Inverts the measured response: actual = TURN_SLOPE*cmd + TURN_COAST_DEG.
-    """
+    """compensated turn command"""
     mag = (abs(err_deg) - TURN_COAST_DEG) / TURN_SLOPE
     mag = max(2, int(round(mag)))
     return "TURN:{}".format(int(math.copysign(mag, err_deg)))
@@ -27,16 +24,6 @@ def _turn_command(err_deg):
 
 def follow_path(get_pose, link, waypoints, px_per_mm,
                 face_deg=None, on_step=None, on_arrive=None, replan=None):
-    """Drive the robot through `waypoints` using live pose feedback.
-
-    get_pose(): -> (x, y, heading_deg) in image space, or None when the robot
-                is not currently visible.
-    link:       object with send_and_wait(command)->bool.
-    replan():   optional callback -> new waypoint list, called when the robot
-                drifts more than REPLAN_PX from its target.
-
-    Returns True if the path was completed, False if aborted (pose lost / abort).
-    """
     idx = 0
     misses = 0
     just_turned = False
@@ -47,7 +34,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
     while idx < len(waypoints):
         steps += 1
         if steps > max_steps:
-            print("Exceeded {} steps without finishing — aborting (not converging).".format(max_steps))
+            print("Exceeded {} steps without finishing - aborting (not converging).".format(max_steps))
             link.send_and_wait("STOP")
             return False
         pose = get_pose()
@@ -58,7 +45,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             if misses % 5 == 0 or misses == MAX_POSE_MISS:
                 print("[MISS {}/{}] robot marker not visible".format(misses, MAX_POSE_MISS))
             if misses >= MAX_POSE_MISS:
-                print("Lost the robot marker for too long — aborting.")
+                print("Lost the robot marker for too long - aborting.")
                 return False
             time.sleep(0.05)
             continue
@@ -70,10 +57,6 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         dist = math.hypot(dx, dy)
 
         if dist < ARRIVE_PX:
-            # Enforce heading toward the next waypoint — ONE correction turn,
-            # then advance immediately WITHOUT re-checking position.
-            # Re-checking position after a turn causes an infinite loop because
-            # the robot's pivot offset moves the center away from the waypoint.
             if idx + 1 < len(waypoints):
                 nx, ny = waypoints[idx + 1]
                 req = math.degrees(math.atan2(ny - y, nx - x))
@@ -83,7 +66,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                     if on_step:
                         on_step(pose, waypoints[idx], idx, turn_cmd, len(waypoints))
                     if not link.send_and_wait(turn_cmd):
-                        print("No ack for {} — aborting.".format(turn_cmd))
+                        print("No ack for {} - aborting.".format(turn_cmd))
                         return False
                     just_turned = True
             if on_arrive:
@@ -103,15 +86,6 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
         step_mm = max(MIN_STEP_MM, min(MAX_STEP_MM, dist / ACTUAL_PX_PER_MM))
         in_close_approach = dist < 2 * ARRIVE_PX
 
-        # Interpolate the heading target toward the next waypoint's bearing so
-        # heading is reached *during* the approach, not corrected post-arrival.
-        # Crucially, this uses a separate heading_target from the movement bearing
-        # so the TURN pre-aligns heading without redirecting the FORWARD step —
-        # the robot still drives toward the current waypoint, just already facing
-        # where it needs to go when it arrives.
-        # Linear blend: 0% next-bearing at HEADING_LOOKAHEAD_PX, 100% at the
-        # close-approach boundary (2*ARRIVE_PX) where turns are suppressed.
-        # Guard: skip if next bearing is >90° away — don't shortcut corners.
         heading_target = bearing
         if (not in_close_approach
                 and dist < HEADING_LOOKAHEAD_PX
@@ -124,19 +98,9 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                 t = max(0.0, min(1.0, t))
                 heading_target = bearing + t * delta
 
-        # err drives TURN decisions; move_err drives REVERSE (waypoint behind robot).
-        # Separating them means pre-turning toward the next bearing never triggers
-        # a spurious REVERSE when the current waypoint is still ahead.
         err = (heading_target - heading + 180.0) % 360.0 - 180.0
         move_err = (bearing - heading + 180.0) % 360.0 - 180.0
 
-        # Turn only when meaningfully off-heading, AND not immediately after
-        # another turn unless we're still badly off (> TURN_COMMIT_DEG). Forcing
-        # a forward step between turns breaks the overshoot limit-cycle.
-        # When the waypoint is directly behind (|move_err| > 150°) don't turn
-        # 180° — just reverse. This eliminates U-turn oscillation on small
-        # overshoots. Within 2*ARRIVE_PX suppress all heading correction: turning
-        # in place drifts the ArUco marker and causes repeated oscillation.
         if abs(move_err) > 150 and not in_close_approach:
             cmd = "REVERSE:{}".format(int(round(step_mm)))
             just_turned = False
@@ -157,7 +121,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
             on_step(pose, waypoints[idx], idx, cmd, len(waypoints))
         t_send = time.time()
         if not link.send_and_wait(cmd):
-            print("No ack for {} — aborting.".format(cmd))
+            print("No ack for {} - aborting.".format(cmd))
             return False
         elapsed = time.time() - t_send
         after = get_pose()
@@ -178,7 +142,7 @@ def follow_path(get_pose, link, waypoints, px_per_mm,
                 idx = 0
                 max_steps = 40 * len(waypoints) + 60
 
-    # Arrived: optionally face the hole, then stop.
+    # arrived: optionally face the hole, then stop.
     if face_deg is not None:
         pose = get_pose()
         if pose is not None:

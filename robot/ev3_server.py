@@ -1,27 +1,6 @@
 #!/usr/bin/env python3
 """
-EV3 Bluetooth bridge for CLOSED-LOOP control.
-
-Runs under ev3dev's python3 (PyBluez), the same runtime as the old
-ev3_receiver.py.  It keeps a persistent Bluetooth connection to the PC and,
-for every command line it receives, hands that single command to the pybricks
-executor (robot/main.py --follow) through two tiny files and returns the
-executor's DONE acknowledgement to the PC.
-
-Why two processes?  Motor control here uses pybricks-micropython, while
-Bluetooth uses python3/PyBluez — two different interpreters that can't share a
-process.  They cooperate through a sequence-numbered file bridge:
-
-    cl_cmd.txt : "<seq> <COMMAND>"   written here, read by the executor
-    cl_ack.txt : "<seq> DONE"        written by the executor, read here
-
-Start BOTH on the EV3 (order doesn't matter):
-
-    python3 robot/ev3_server.py --tcp        # TCP/WiFi  (default port 9999)
-    python3 robot/ev3_server.py              # Bluetooth (RFCOMM)
-    brickrun -- pybricks-micropython robot/main.py --follow
-
-Then run tools/closed_loop_controller.py on the PC (use --tcp <robot-ip> to match).
+Run this TCP or bluetooth server on the EV3, then loop.py on your own machine
 """
 import os
 import sys
@@ -43,7 +22,7 @@ def write_atomic(path, text):
 
 
 def read_seq(path):
-    """First whitespace-delimited int in path, or -1 if unavailable."""
+    """first whitespace-delimited int in path, or -1 if unreadable."""
     try:
         with open(path, "r") as f:
             return int(f.readline().strip().split(" ", 1)[0])
@@ -61,10 +40,6 @@ def wait_for_ack(seq, timeout=ACK_TIMEOUT):
 
 
 def serve(client, seq):
-    """Handle one PC connection. `seq` is the running command counter, which
-    must keep increasing ACROSS connections so it never collides with the
-    executor's last-processed sequence (a reconnect that restarted at 1 could
-    otherwise be skipped). Returns the updated counter."""
     buf = ""
     while True:
         data = client.recv(1024)
@@ -109,10 +84,6 @@ def make_bluetooth_server():
 
 
 def main():
-    # Resume the command counter from disk so a bridge restart never reuses a
-    # sequence the (still-running) executor has already processed. Only seed the
-    # files when they're missing/invalid, so we don't clobber a live executor's
-    # in-progress ack.
     seq = read_seq(CMD_FILE)
     if seq < 0:
         seq = 0

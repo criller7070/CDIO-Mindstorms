@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""
-Fully automatic HSV calibration — library module.
-
-Algorithm:
-  1. RED walls detected with existing range → field boundary established.
-     Range is refined with a floor constraint so it can never be worse than
-     the current values.
-  2. ORANGE balls: existing range as seed + circularity filter inside field.
-  3. WHITE balls:  brightness seed + stricter circularity (rejects glare).
-
-Temporal consistency: each colour builds a spatial hit-count map across all
-frames. Only pixels in areas detected consistently (>= HIT_THRESHOLD of frames)
-contribute to the final range. Single-frame glare and reflections are suppressed.
-
-Press ESC during countdown to abort without saving.
-"""
 import cv2
 import numpy as np
 import customtkinter as ctk
@@ -24,33 +8,28 @@ from config import save_color_ranges
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ── Tuning ────────────────────────────────────────────────────────────────────
+# TUNING
 WHITE_SEED = {'lo': [0, 0, 180], 'hi': [179, 55, 255]}  # wider after CLAHE
 
-# CLAHE normalises V locally — must match the detector (detection._to_hsv).
+# CLAHE normalises V
 _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 BALL_MIN_CIRC       = 0.55
-BALL_MIN_CIRC_WHITE = 0.70   # stricter — glare passes the brightness seed
+BALL_MIN_CIRC_WHITE = 0.70
 BALL_MAX_ASPECT     = 2.0
-BALL_MIN_AREA       = 40     # px²
-WALL_MIN_AREA       = 300    # px²
+BALL_MIN_AREA       = 40     # px2
+WALL_MIN_AREA       = 300    # px2
 
-H_TOL, S_TOL, V_TOL = 8, 20, 20   # tighter — more frames compensate
+H_TOL, S_TOL, V_TOL = 8, 20, 20 
 
 COUNTDOWN_SEC  = 3
 CAPTURE_FRAMES = 1000
 
-# Pixel location is "reliable" when detected in at least this fraction of frames
 HIT_THRESHOLD = 0.15
-
 WIN = 'Auto Calibration'
 
-
-# ── Mask helpers ──────────────────────────────────────────────────────────────
-
+# MASK HELPERS
 def _to_hsv_norm(frame):
-    """Same normalization as BallDetector._to_hsv — CLAHE on V channel."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
     v = _CLAHE.apply(v)
@@ -124,7 +103,7 @@ def _contours_inside_hull(contours, hull, inset=5):
     return out
 
 
-# ── Range computation ─────────────────────────────────────────────────────────
+# RANGE COMPUTATION
 
 def _compute_range(pixels, color_name):
     H = pixels[:, 0].astype(float)
@@ -157,14 +136,14 @@ def _compute_range(pixels, color_name):
     return {'lower': [h_lo, s_lo, v_lo], 'upper': [h_hi, s_hi, v_hi]}
 
 
-# ── Per-frame analysis ────────────────────────────────────────────────────────
+# PER-FRAME ANALYSIS
 
 def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
     fh, fw = frame.shape[:2]
     if hsv is None:
         hsv = _to_hsv_norm(frame)
 
-    # RED — boundary + accumulate
+    # RED - boundary + accumulate
     red_mask   = _morph(_mask_from_range(hsv, color_ranges['RED']), close=7, open_=5)
     red_cnts   = _large_blobs(red_mask)
     field_hull = _hull_from_contours(red_cnts)
@@ -195,7 +174,7 @@ def _analyse_frame(frame, hit_maps, hsv_pools, color_ranges, hsv=None):
     return red_mask
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+# MAIN ENTRY POINT
 
 def run_auto_calibration(cap, color_ranges, headless=False):
     import time
@@ -234,7 +213,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
     print("\n--- Auto Calibration ---")
     print("Keep ALL objects visible. Calibrating in {}s...".format(COUNTDOWN_SEC))
 
-    # ── Countdown preview ────────────────────────────────────────────────────
+    # COUNTDOWN PREVIEW
     deadline = time.time() + COUNTDOWN_SEC
     while True:
         ret, frame = cap.read()
@@ -265,7 +244,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         if time.time() >= deadline:
             break
 
-    # ── Capture ───────────────────────────────────────────────────────────────
+    # CAPTURE
     ret, probe = cap.read()
     if not ret:
         if not headless:
@@ -305,7 +284,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         elif pct % 10 == 0:
             print("  {}% captured...".format(pct))
 
-    # ── Temporal filter + compute ranges ─────────────────────────────────────
+    # TEMPORAL FILTER + COMPUTE RANGES
     threshold_count = HIT_THRESHOLD * CAPTURE_FRAMES
     confirmed = {}
     sanity    = {'ORANGE': (0, 50), 'WHITE': (0, 179)}
@@ -313,13 +292,13 @@ def run_auto_calibration(cap, color_ranges, headless=False):
     for color_name in ('RED', 'ORANGE', 'WHITE'):
         raw_pool = hsv_pools[color_name]
         if not raw_pool:
-            print("  {} : nothing detected — keeping existing range".format(color_name))
+            print("  {} : nothing detected - keeping existing range".format(color_name))
             continue
 
         reliable = (hit_maps[color_name] >= threshold_count).astype(np.uint8)
         reliable_pixel_count = int(reliable.sum())
         if reliable_pixel_count < 50:
-            print("  {} : too few reliable pixels ({}) — keeping existing".format(
+            print("  {} : too few reliable pixels ({}) - keeping existing".format(
                 color_name, reliable_pixel_count))
             continue
 
@@ -331,7 +310,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
             stable_px = np.vstack(raw_pool[cutoff:]) if len(raw_pool) > 4 else np.vstack(raw_pool)
 
         if len(stable_px) < 50:
-            print("  {} : too few stable pixels — keeping existing".format(color_name))
+            print("  {} : too few stable pixels - keeping existing".format(color_name))
             continue
 
         new_range = _compute_range(stable_px, color_name)
@@ -340,7 +319,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
             h_c = (new_range['lower'][0] + new_range['upper'][0]) / 2
             lo, hi = sanity[color_name]
             if not (lo <= h_c <= hi):
-                print("  {} : sanity FAIL (H={:.0f}) — keeping existing".format(
+                print("  {} : sanity FAIL (H={:.0f}) - keeping existing".format(
                     color_name, h_c))
                 continue
 
@@ -356,7 +335,7 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         print("  {} : lower={}  upper={}  ({} reliable px)".format(
             color_name, new_range['lower'], new_range['upper'], len(stable_px)))
 
-    # ── Apply & save ──────────────────────────────────────────────────────────
+    # APPLY & SAVE
     if confirmed:
         for color_name, ranges in confirmed.items():
             if color_name not in color_ranges:
@@ -366,9 +345,9 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         save_color_ranges(color_ranges)
         print("Calibration saved: {}".format(list(confirmed.keys())))
     else:
-        print("Nothing detected — calibration unchanged.")
+        print("Nothing detected - calibration unchanged.")
 
-    # ── Result display ────────────────────────────────────────────────────────
+    # RESULT DISPLAY
     if not headless:
         if confirmed:
             result_txt = "Saved: {}".format(', '.join(confirmed.keys()))
@@ -398,3 +377,16 @@ def run_auto_calibration(cap, color_ranges, headless=False):
         root.mainloop()
         cv2.destroyWindow(WIN)
     return confirmed
+
+
+if __name__ == "__main__":
+    import os
+    os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+    import cv2
+    from config import load_color_ranges, CAMERA_INDEX
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cr = load_color_ranges()
+    run_auto_calibration(cap, cr)
+    cap.release()

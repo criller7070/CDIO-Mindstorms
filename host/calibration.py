@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-Live HSV calibration — library module.
-Call run_calibration(cap, color_ranges) to open the trackbar UI.
-Modifies color_ranges in-place so the detector sees changes immediately.
-
-Controls panel is customtkinter (modern look on Linux + Windows).
-Camera preview still uses cv2.imshow.
-"""
 import cv2
 import numpy as np
 import customtkinter as ctk
@@ -60,19 +52,11 @@ def _save(color, color_ranges, h_min, h_max, s_min, s_max, v_min, v_max):
             color_ranges['ORANGE']['mean_h_min'] = max(0,   h_min - 2)
             color_ranges['ORANGE']['mean_h_max'] = min(179, h_max + 5)
     save_color_ranges(color_ranges)
-    print("Saved {} → lower={} upper={}".format(
+    print("Saved {} to lower={} upper={}".format(
         color, color_ranges[color]['lower'], color_ranges[color]['upper']))
 
 
 def run_calibration(cap, color_ranges):
-    """
-    Open a customtkinter slider panel + OpenCV preview windows to tune HSV ranges live.
-
-    Controls:
-      N / Next Color button  – cycle WHITE → ORANGE → RED
-      S / Save button        – save to color_ranges.json
-      Q / Quit button        – exit calibration
-    """
     color_idx  = [0]
     running    = [True]
     after_id   = [None]
@@ -82,13 +66,13 @@ def run_calibration(cap, color_ranges):
     root.resizable(False, False)
     root.attributes('-topmost', True)
 
-    # ── Color indicator ────────────────────────────────────────────────────────
+    # COLOR INDICATOR
     color_label = ctk.CTkLabel(root, text=COLORS[0],
                                font=ctk.CTkFont(size=18, weight='bold'),
                                text_color=COLOR_FG[COLORS[0]])
     color_label.pack(pady=(14, 6))
 
-    # ── Sliders ────────────────────────────────────────────────────────────────
+    # SLIDERS
     slider_defs = [
         ('H min', 179), ('H max', 179),
         ('S min', 255), ('S max', 255),
@@ -121,12 +105,12 @@ def run_calibration(cap, color_ranges):
 
         sliders[name] = slider
 
-    # ── Red-channel hint ───────────────────────────────────────────────────────
+    # RED-CHANNEL HINT
     hint_label = ctk.CTkLabel(root, text='', font=ctk.CTkFont(size=10),
                               text_color='gray')
     hint_label.pack(pady=(2, 4))
 
-    # ── Buttons ────────────────────────────────────────────────────────────────
+    # BUTTONS
     btn_frame = ctk.CTkFrame(root, fg_color='transparent')
     btn_frame.pack(pady=10)
 
@@ -174,7 +158,7 @@ def run_calibration(cap, color_ranges):
     root.bind('<q>', lambda e: do_quit())
     root.bind('<Q>', lambda e: do_quit())
 
-    # ── Camera loop via after() ────────────────────────────────────────────────
+    # CAMERA LOOP
     _load_sliders(COLORS[0])
     print("\n--- HSV Calibration ---")
     print("  N or button : cycle WHITE / ORANGE / RED  (auto-saves current)")

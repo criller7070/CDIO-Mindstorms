@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-Transport links — all expose send_and_wait(cmd) -> bool.
-
-BluetoothLink  legacy Bluetooth via tools_mission_sender
-TCPLink        WiFi over TCP (primary, matches ev3_server.py --tcp)
-SimLink        virtual robot for offline loop testing
+transport links, BluetoothLink, TCPLink, SimLink etc
 """
 import math
 import time
@@ -14,7 +10,7 @@ from config import FORWARD_CMD_SCALE
 
 
 class BluetoothLink:
-    """Sends single commands to the EV3 bridge and blocks for its DONE ack."""
+    """sends single commands to the EV3 bridge over Bluetooth and blocks for DONE."""
 
     def __init__(self, ev3_address=None):
         import sys, os
@@ -35,10 +31,7 @@ class BluetoothLink:
 
 
 class TCPLink:
-    """Sends single commands to the EV3 bridge over TCP/WiFi and blocks for DONE.
-
-    Lower latency than Bluetooth. Matches robot/ev3_server.py --tcp.
-    """
+    """sends commands to the EV3 bridge over TCP/WiFi. matches robot/ev3_server.py --tcp."""
 
     def __init__(self, host, port=9999, timeout=20.0):
         self.host = host
@@ -103,13 +96,8 @@ class TCPLink:
 
 
 class SimLink:
-    """Virtual robot for testing the loop with no hardware.
-
-    Mirrors robot/main.py command semantics: FORWARD:v moves v / FORWARD_CMD_SCALE
-    physical mm, and TURN coasts a constant turn_overshoot_deg past the commanded
-    angle. Optional gains/noise add error to prove the closed loop corrects drift.
+    """virtual robot for testing the loop offline
     """
-
     def __init__(self, pose, px_per_mm, turn_gain=1.0, fwd_gain=1.0,
                  lateral_noise_mm=0.0, turn_overshoot_deg=0.0, seed=0):
         self.x, self.y, self.heading = pose

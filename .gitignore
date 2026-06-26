@@ -5,9 +5,10 @@ __pycache__/
 venv/
 ENV/
 
-# VS Code
+# IDEs / editors
 .vscode/
 *.code-workspace
+.idea/
 
 # Mindstorms/SPIKE Hub files
 .spyderproject
@@ -18,7 +19,13 @@ ENV/
 
 # User-specific config
 *.user
+.env
 
 # Generated debug screenshots and masks
 screenshots/*
 !screenshots/.gitkeep
+
+# Debug/diagnostic images dumped to repo root
+*.png
+*.jpg
+*.jpeg

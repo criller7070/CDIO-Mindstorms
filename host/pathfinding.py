@@ -2,15 +2,10 @@
 """
 A* path planner for CDIO golf field.
 
-Finds the optimal order to collect all balls and deliver them to the left hole
-while staying inside the wall margin and away from the center obstacle.
-
-Outputs EV3-compatible TURN/FORWARD/LIFT_DOWN/LIFT_UP commands.
-
 Coordinate system (image space):
-  - x increases left → right
-  - y increases top  → bottom
-  - heading 0° = facing right, -90° = facing up, 90° = facing down, 180° = facing left
+  - x increases left to right
+  - y increases top  to bottom (just like computer graphics normally)
+  - heading 0 deg = facing right, -90 deg = facing up, 90 deg = facing down, 180 deg = facing left
   - TURN positive = clockwise (matches pybricks DriveBase.turn)
 """
 
@@ -20,18 +15,10 @@ import cv2
 import numpy as np
 from itertools import permutations
 
-
-# -----------------------------------------------------------------------------
-# - Calibration - set FIELD_WIDTH_MM and FIELD_HEIGHT_MM to real measurements -
-# -----------------------------------------------------------------------------
+# CALIBRATION
 FIELD_WIDTH_MM = 1670   # field width:  167.0 cm
 FIELD_HEIGHT_MM = 1215  # field height: 121.5 cm
-
-# Straight approach segment injected before each ball pickup.  Must exceed the
-# nose_to_aruco trim distance (248 mm) so the trimmed endpoint lands inside the
-# guaranteed-straight segment and the robot's final approach is always direct.
 BALL_APPROACH_MM = 400
-
 
 class FieldPlanner:
     """Grid-based A* planner with obstacle avoidance for the golf field."""
@@ -52,19 +39,6 @@ class FieldPlanner:
                  gate_open=True,
                  gate_arm_mm=0.0,
                  aruco_from_back_frac=0.5):
-        """
-        field_bounds:    (x_min, y_min, x_max, y_max) pixel coords of red rectangle
-        center_pos:      (cx, cy) pixel coords of center crosshair
-        wall_margin:     pixels to keep away from walls
-        center_radius:   pixel radius of center no-go zone
-        field_width_mm:  real-world field width in mm (for command distances)
-        field_height_mm: real-world field height in mm
-        field_hull:      optional (N,1,2) cv2 contour of the actual wall shape;
-                         cells outside it are blocked regardless of wall_margin
-        gate_open:       if True, gate arms are horizontal and widen the footprint
-                         by gate_arm_mm on each side
-        gate_arm_mm:     length of each gate arm in mm
-        """
         self.bounds = field_bounds
         self.center = center_pos
         self.wall_margin = wall_margin
@@ -86,23 +60,19 @@ class FieldPlanner:
         self.robot_half_length_px = (robot_length_mm / 2.0) * self.px_per_mm
         self.robot_half_length_mm = robot_length_mm / 2.0
 
-        # The nav loop tracks the ArUco marker, not the geometric centre.
-        # To land the nose on a ball, trim back by the ArUco-to-nose distance.
+        # ArUco
         nose_to_aruco_mm = robot_length_mm * (1.0 - aruco_from_back_frac)
         self.nose_to_aruco_px = nose_to_aruco_mm * self.px_per_mm
 
-        # Effective lateral half-width including open gate arms.
+        # Effective lateral (side to side) half-width including open gate arms.
         gate_extra_px = (gate_arm_mm * self.px_per_mm) if gate_open else 0.0
         self.effective_half_width_px = self.robot_half_width_px + gate_extra_px
 
-        # Center-obstacle clearance: the robot can approach the cross from any
-        # direction, so use whichever robot dimension is larger (half-length when
-        # approaching head-on, effective half-width when approaching from the side).
+        # Center-obstacle 
         self.center_clearance_px = max(self.effective_half_width_px,
                                        self.robot_half_length_px)
 
-        # Turn pivot offset (mm behind centre → px).  The robot rotates about
-        # this point, not its centre, so command generation compensates for it.
+        # Turn pivot offset
         self.pivot_offset_mm = pivot_offset_mm
         self.pivot_offset_px = pivot_offset_mm * self.px_per_mm
 
@@ -111,25 +81,20 @@ class FieldPlanner:
 
         self.grid = self._build_grid()
 
-    # ------------------------------------------------------------------
-    # Grid construction
-    # ------------------------------------------------------------------
-
+    # GRID CONSTRUCTION
     def _build_grid(self):
         gs = self.GRID_SCALE
-        # Wall margin: keep robot center far enough that the widest part of the
-        # body (including open gate arms) clears the wall.
+        # Wall margin
         margin = max(1, int(self.wall_margin + self.effective_half_width_px) // gs)
         cx = (self.center[0] - self.x0) // gs
         cy = (self.center[1] - self.y0) // gs
-        # Center obstacle: use the larger of effective half-width and half-length
-        # so the body clears the cross regardless of approach angle.
+        # Center obstacle
         cr = max(1, int(self.center_radius + self.center_clearance_px) // gs)
 
         grid = [[False] * self.gh for _ in range(self.gw)]
         for gx in range(self.gw):
             for gy in range(self.gh):
-                # Outside actual field hull (non-rectangular walls).  Keep the
+                # Outside actual field hull (non-rectangular walls). Keep the
                 # robot centre at least effective-half-width inside the wall.
                 if self._field_hull is not None:
                     px, py = self._to_px(gx, gy)
@@ -148,10 +113,7 @@ class FieldPlanner:
                     grid[gx][gy] = True
         return grid
 
-    # ------------------------------------------------------------------
-    # Coordinate helpers
-    # ------------------------------------------------------------------
-
+    # COORDINATE HELPERS
     def _to_grid(self, px, py):
         gx = max(0, min(self.gw - 1, (int(px) - self.x0) // self.GRID_SCALE))
         gy = max(0, min(self.gh - 1, (int(py) - self.y0) // self.GRID_SCALE))
@@ -182,15 +144,9 @@ class FieldPlanner:
         free_gx, free_gy = self._nearest_free(gx, gy)
         return self._to_px(free_gx, free_gy)
 
-    # ------------------------------------------------------------------
-    # A* search
-    # ------------------------------------------------------------------
-
+    # A* SEARCH
     def astar(self, start_px, end_px):
-        """
-        Find shortest path from start_px to end_px in pixel space.
-        Returns list of (px, py) tuples, or None if unreachable.
-        """
+        """shortest path from start_px to end_px. returns list of (px, py) or None."""
         s = self._nearest_free(*self._to_grid(*start_px))
         e = self._nearest_free(*self._to_grid(*end_px))
 
@@ -230,15 +186,9 @@ class FieldPlanner:
 
         return None
 
-    # ------------------------------------------------------------------
-    # K-Means++ clustering (capacity-aware multi-trip)
-    # ------------------------------------------------------------------
-
+    # K-MEANS++ CLUSTERING (my goat)
     def cluster_balls(self, ball_positions, capacity):
-        """
-        Partition ball_positions into groups of ≤ capacity using K-Means++.
-        Returns list of lists of indices into ball_positions.
-        """
+        """split balls into groups of ≤ capacity using K-Means++. returns list of index lists."""
         n = len(ball_positions)
         k = max(1, -(-n // capacity))  # ceil(n / capacity)
         if k == 1:
@@ -254,9 +204,9 @@ class FieldPlanner:
         return [c for c in clusters if c]
 
     def _kmeans_plus_plus(self, pts, k):
-        """K-Means++ initialisation + iteration. Returns integer assignment array."""
+        """K-Means++ init + iter"""
         n = len(pts)
-        rng = np.random.default_rng(42)  # fixed seed → reproducible routes
+        rng = np.random.default_rng(42)  # fixed seed to reproducible routes
 
         # K-Means++ center selection
         ci = [int(rng.integers(n))]
@@ -266,7 +216,7 @@ class FieldPlanner:
             ci.append(int(rng.choice(n, p=probs)))
         centers = pts[ci].copy()
 
-        # Iterate until convergence
+        # Iterate
         assignments = np.zeros(n, dtype=int)
         for _ in range(100):
             dists_sq = np.sum((pts[:, None, :] - centers[None, :, :]) ** 2, axis=2)
@@ -308,127 +258,181 @@ class FieldPlanner:
                     assignments[m] = nearest
         return assignments
 
-    # ------------------------------------------------------------------
-    # Ball pickup routing with straight approach injection
-    # ------------------------------------------------------------------
+    # BALL PICKUP ROUTING
+    def _forced_approach_dir(self, ball_pos):
+        bx, by = float(ball_pos[0]), float(ball_pos[1])
+        x0, y0, x1, y1 = self.bounds
+        threshold = self.wall_margin
+
+        near_left   = bx - x0 < threshold
+        near_right  = x1 - bx < threshold
+        near_top    = by - y0 < threshold
+        near_bottom = y1 - by < threshold
+
+        _s2 = 1.0 / math.sqrt(2)
+        # Corners
+        if near_left  and near_top:    return (-_s2, -_s2)
+        if near_right and near_top:    return ( _s2, -_s2)
+        if near_left  and near_bottom: return (-_s2,  _s2)
+        if near_right and near_bottom: return ( _s2,  _s2)
+
+        # Single wall
+        if near_left:   return (-1.0,  0.0)
+        if near_right:  return ( 1.0,  0.0)
+        if near_top:    return ( 0.0, -1.0)
+        if near_bottom: return ( 0.0,  1.0)
+
+        # Centre obstacle
+        if self.center is not None and self.center_clearance_px > 0:
+            cx, cy = float(self.center[0]), float(self.center[1])
+            ddx, ddy = bx - cx, by - cy
+            dist = math.hypot(ddx, ddy)
+            ctr_threshold = self.center_clearance_px + 80.0
+            if 0 < dist < ctr_threshold:
+                return ((cx - bx) / dist, (cy - by) / dist)
+
+        return None
+
+    _wall_approach_dir = _forced_approach_dir
 
     def _pickup_seg(self, from_pos, ball_pos):
-        """
-        A* path to ball_pos whose final two points are an exact straight approach.
-
-        Routes the transit via A* to an approach_point BALL_APPROACH_MM before the
-        ball (along the from→ball direction), then appends the exact approach_pt
-        and exact ball_center as the final two points.  These are stored without
-        grid-snapping so _segs_to_commands can preserve them through simplification.
-
-        Falls back to plain A* + exact endpoint if the approach_point is inside an
-        obstacle or the total distance is too short for a separate approach segment.
-        """
+        """A* path to ball_pos with a guaranteed straight BALL_APPROACH_MM final segment."""
         bx, by = float(ball_pos[0]), float(ball_pos[1])
         fx, fy = float(from_pos[0]), float(from_pos[1])
         approach_px = BALL_APPROACH_MM * self.px_per_mm
 
-        dx, dy = bx - fx, by - fy
-        dist = math.hypot(dx, dy)
-
-        if dist > approach_px * 1.1:
-            ux, uy = dx / dist, dy / dist
+        # Wall, corner, or centre-adjacent
+        wall_dir = self._forced_approach_dir(ball_pos)
+        if wall_dir is not None:
+            ux, uy = wall_dir
             apx = bx - approach_px * ux
             apy = by - approach_px * uy
-
             if not self._is_in_obstacle(apx, apy):
                 transit = self.astar((int(fx), int(fy)), (int(apx), int(apy)))
                 if transit is not None:
-                    # Replace grid-snapped transit endpoint with exact approach_pt,
-                    # then append exact ball center.  _segs_to_commands skips RDP
-                    # on these last two points so the straight approach is preserved.
                     return transit[:-1] + [(apx, apy), (bx, by)]
+            # Fallback for wall ball
+            seg = self.astar((int(fx), int(fy)), (int(bx), int(by)))
+            if seg:
+                seg[-1] = (bx, by)
+            return seg
 
-        # Fallback: plain A* with exact endpoint (fixes grid-snap, no approach guarantee)
+        # Open-field ball: A* to ball, walk back approach_px along path.
         seg = self.astar((int(fx), int(fy)), (int(bx), int(by)))
-        if seg:
-            seg[-1] = (bx, by)
+        if seg is None:
+            return None
+        seg[-1] = (bx, by)  # exact endpoint
+
+        # Walk backward from the ball end to find the approach_point.
+        remaining = approach_px
+        for i in range(len(seg) - 1, 0, -1):
+            p0x, p0y = float(seg[i - 1][0]), float(seg[i - 1][1])
+            p1x, p1y = float(seg[i][0]),     float(seg[i][1])
+            step = math.hypot(p1x - p0x, p1y - p0y)
+            if remaining <= step:
+                t = remaining / step
+                apx = p1x - t * (p1x - p0x)
+                apy = p1y - t * (p1y - p0y)
+                return seg[:i] + [(apx, apy), (bx, by)]
+            remaining -= step
+
+        # Path shorter than approach_px: return as-is (ball very close).
         return seg
 
-    # ------------------------------------------------------------------
-    # Optimal route (TSP brute-force for ≤ ~8 balls)
-    # ------------------------------------------------------------------
-
-    # Brute-force is O(n!) A* calls; cap it to keep planning under ~1 s.
-    _BRUTE_FORCE_LIMIT = 6
+    # OPTIMAL ROUTE
+    _BRUTE_FORCE_LIMIT = 9
 
     def optimal_route(self, robot_pos, ball_positions, dropoff_pos):
-        """
-        Return a good visit order and the corresponding A* path segments.
-        Brute-force for n <= _BRUTE_FORCE_LIMIT; nearest-neighbour greedy
-        otherwise (avoids the n! explosion with 7+ balls).
-
-        Returns:
-            ball_order  - list of indices into ball_positions
-            path_segs   - list of pixel-path segments:
-                          [robot→b0, b0→b1, ..., bN→dropoff]
-        """
+        """best visit order + A* path segments"""
         n = len(ball_positions)
         if n == 0:
             path = self.astar(robot_pos, dropoff_pos)
             return [], ([path] if path else [])
 
-        if n <= self._BRUTE_FORCE_LIMIT:
-            best_order, best_segs, best_cost = None, None, float('inf')
-            for perm in permutations(range(n)):
-                waypoints = ([robot_pos]
-                             + [ball_positions[i] for i in perm]
-                             + [dropoff_pos])
-                segs = []
-                cost = 0.0
-                ok = True
-                for i in range(len(waypoints) - 1):
-                    p0 = (int(waypoints[i][0]), int(waypoints[i][1]))
-                    p1 = (int(waypoints[i + 1][0]), int(waypoints[i + 1][1]))
-                    is_ball_leg = i < len(waypoints) - 2
-                    if is_ball_leg:
-                        seg = self._pickup_seg(waypoints[i], waypoints[i + 1])
-                    else:
-                        seg = self.astar(p0, p1)
-                    if seg is None:
-                        ok = False
-                        break
-                    segs.append(seg)
-                    cost += self._path_length(seg)
-                if ok and cost < best_cost:
-                    best_cost = cost
-                    best_order = list(perm)
-                    best_segs = segs
-            return (best_order or list(range(n))), best_segs
+        # nodes
+        nodes = [robot_pos] + list(ball_positions) + [dropoff_pos]
+        N = len(nodes)
 
-        # Greedy nearest-neighbour for large groups.
-        remaining = list(range(n))
-        order = []
-        segs = []
-        cur = robot_pos
-        while remaining:
-            best_idx, best_seg, best_d = None, None, float('inf')
-            for idx in remaining:
-                seg = self._pickup_seg(cur, ball_positions[idx])
-                if seg is None:
+        # Pre-compute all pairwise segments
+        seg_cache = [[None] * N for _ in range(N)]
+        cost_cache = [[float('inf')] * N for _ in range(N)]
+        for i in range(N):
+            for j in range(N):
+                if i == j:
+                    cost_cache[i][j] = 0.0
                     continue
-                d = self._path_length(seg)
-                if d < best_d:
-                    best_d = d
-                    best_idx = idx
-                    best_seg = seg
-            if best_idx is None:
-                break
-            order.append(best_idx)
-            segs.append(best_seg)
-            cur = ball_positions[best_idx]
-            remaining.remove(best_idx)
-        # Final leg to dropoff
-        end_seg = self.astar((int(cur[0]), int(cur[1])),
-                             (int(dropoff_pos[0]), int(dropoff_pos[1])))
+                is_ball_dest = 1 <= j <= n
+                if is_ball_dest:
+                    seg = self._pickup_seg(nodes[i], nodes[j])
+                else:
+                    seg = self.astar(
+                        (int(nodes[i][0]), int(nodes[i][1])),
+                        (int(nodes[j][0]), int(nodes[j][1])))
+                seg_cache[i][j] = seg
+                cost_cache[i][j] = self._path_length(seg) if seg else float('inf')
+
+        def route_cost(order):
+            # order
+            total = cost_cache[0][order[0]]
+            for k in range(len(order) - 1):
+                total += cost_cache[order[k]][order[k + 1]]
+            total += cost_cache[order[-1]][n + 1]
+            return total
+
+        # Ball node indices are 1..n
+        ball_nodes = list(range(1, n + 1))
+
+        if n <= self._BRUTE_FORCE_LIMIT:
+            best_order, best_cost = None, float('inf')
+            for perm in permutations(ball_nodes):
+                c = route_cost(perm)
+                if c < best_cost:
+                    best_cost = c
+                    best_order = list(perm)
+        else:
+            # Nearest-neighbour seed
+            remaining = list(ball_nodes)
+            best_order = []
+            cur = 0
+            while remaining:
+                nxt = min(remaining, key=lambda j: cost_cache[cur][j])
+                best_order.append(nxt)
+                cur = nxt
+                remaining.remove(nxt)
+
+            # 2-opt improvement
+            improved = True
+            while improved:
+                improved = False
+                for i in range(len(best_order) - 1):
+                    for j in range(i + 2, len(best_order)):
+                        before = (cost_cache[best_order[i - 1] if i > 0 else 0][best_order[i]]
+                                  + cost_cache[best_order[j]][best_order[j + 1] if j + 1 < len(best_order) else n + 1])
+                        after  = (cost_cache[best_order[i - 1] if i > 0 else 0][best_order[j]]
+                                  + cost_cache[best_order[i]][best_order[j + 1] if j + 1 < len(best_order) else n + 1])
+                        if after < before - 1e-6:
+                            best_order[i:j + 1] = best_order[i:j + 1][::-1]
+                            improved = True
+
+        if best_order is None:
+            best_order = ball_nodes
+
+        # Reconstruct segments in best order
+        segs = []
+        prev = 0
+        for node_idx in best_order:
+            seg = seg_cache[prev][node_idx]
+            if seg is None:
+                seg = [nodes[prev], nodes[node_idx]]
+            segs.append(seg)
+            prev = node_idx
+        end_seg = seg_cache[prev][n + 1]
         if end_seg:
             segs.append(end_seg)
-        return order, segs if segs else None
+
+        # Convert node indices back to ball_positions indices (0-based)
+        ball_order = [idx - 1 for idx in best_order]
+        return ball_order, segs
 
     @staticmethod
     def _path_length(path):
@@ -439,9 +443,7 @@ class FieldPlanner:
             total += (dx ** 2 + dy ** 2) ** 0.5
         return total
 
-    # ------------------------------------------------------------------
-    # Path simplification (Ramer-Douglas-Peucker)
-    # ------------------------------------------------------------------
+    # PATH SIMPLIFICATION (Ramer-Douglas-Peucker)
 
     @staticmethod
     def simplify(pts, eps=8):
@@ -465,20 +467,10 @@ class FieldPlanner:
             return left[:-1] + right
         return [pts[0], pts[-1]]
 
-    # ------------------------------------------------------------------
-    # Command generation
-    # ------------------------------------------------------------------
+    # COMMAND GENERATION
 
     def paths_to_commands(self, path_segs, initial_heading_deg=0):
-        """
-        Convert route path segments to EV3 command strings.
-
-        path_segs:           output of optimal_route
-        initial_heading_deg: robot's starting heading in image-space degrees
-                             (-90 = facing up/north, 0 = facing right, 90 = facing down)
-
-        Returns list of command strings for commands.txt.
-        """
+        """convert route segments to EV3 command strings for commands.txt."""
         commands = ["SPEED:300"]
         heading = float(initial_heading_deg)
         n_collect = len(path_segs) - 1  # last segment ends at dropoff
@@ -514,8 +506,7 @@ class FieldPlanner:
         cx_mm = (self.center[0] - self.x0) / self.px_per_mm
         cy_mm = (self.center[1] - self.y0) / self.px_per_mm
         cr_mm = self.center_radius / self.px_per_mm
-        # Use the effective obstacle margin (wall keepout + robot body clearance)
-        # so the simulator's margin band matches the actual navigable boundary.
+        # Use the effective obstacle margin
         wm_mm = (self.wall_margin + self.effective_half_width_px) / self.px_per_mm
         rx_mm = (robot_pos[0] - self.x0) / self.px_per_mm
         ry_mm = (robot_pos[1] - self.y0) / self.px_per_mm
@@ -528,7 +519,7 @@ class FieldPlanner:
             "# SIM_START: {:.0f} {:.0f}".format(rx_mm, ry_mm),
             "# SIM_HOLE: {:.0f} {:.0f}".format(hx_mm, hy_mm),
             # Camera pixels-per-mm so the simulator can render at the exact
-            # same scale as the debug overlay (same physical mm → same screen px).
+            # same scale as the debug overlay (same physical mm to same screen px).
             "# SIM_PXPERMM: {:.5f}".format(self.px_per_mm),
             # Turn pivot offset (mm behind centre) so the simulator swings the
             # robot about the same point the commands were compensated for.
@@ -544,44 +535,25 @@ class FieldPlanner:
             meta.append("# SIM_HULL: {}".format(pairs))
         return meta
 
-    # ------------------------------------------------------------------
-    # Multi-trip planning
-    # ------------------------------------------------------------------
+    # MULTI-TRIP PLANNING
 
     def _segs_to_commands(self, path_segs, is_last_trip, heading, cur_pos,
                           face_deg=None):
-        """
-        Convert one trip's path segments to EV3 commands.
-        Tracks and returns the robot's final heading AND its real (x, y) pixel
-        pose so the next leg/trip continues from where the robot actually
-        stopped (which, after a front-intake collect, is short of the ball
-        centre) instead of from the segment's nominal endpoint.
+        """convert one trip's segments to commands, trimming collect legs to nose-stop.
 
-        cur_pos:  the robot's actual pixel position at the start of these segs.
-        face_deg: if set, a TURN to this heading is inserted before STOP on
-                  the last trip so the robot faces the hole when it arrives.
-
-        Returns (commands, heading, cur_pos, driven_segs), where driven_segs is
-        the list of actual traversed polylines (one per leg, after the start
-        override and the collect trim) so the debug overlay can draw exactly
-        what the robot does.
+        returns (commands, heading, cur_pos, driven_segs) so the next trip starts
+        from the real stopped position, not the segment's nominal endpoint.
         """
         commands = []
         driven_segs = []
         n_collect = len(path_segs) - 1
-        # Trim so the nose overshoots the ball by ~75 mm.
-        # Measured ArUco-to-nose = 210 mm. Capture zone = 0..90 mm past nose.
-        # T=135 mm → nose at ball + (210-135) = ball + 75 mm.  Mid-capture-zone.
-        TRIM_MM = 135.0
+        # Trim
+        TRIM_MM = 120.0
         half_len_px = TRIM_MM * self.px_per_mm
 
         for leg, seg in enumerate(path_segs):
             is_collect = leg < n_collect
             if is_collect and len(seg) >= 2:
-                # Preserve the last 2 points of collect segs as-is (no RDP).
-                # _pickup_seg stores [exact_approach_pt, exact_ball_center] there,
-                # so the approach direction and endpoint are never altered by
-                # simplification.
                 transit_raw = list(seg[:-2]) if len(seg) > 2 else []
                 transit = self.simplify(transit_raw, eps=8) if transit_raw else []
                 pts = transit + [tuple(seg[-2]), tuple(seg[-1])]
@@ -590,25 +562,8 @@ class FieldPlanner:
             if not pts:
                 continue
 
-            # Start this leg from where the robot ACTUALLY is.  The segment's
-            # nominal start (pts[0]) is the previous waypoint (a ball centre),
-            # but after a front-intake collect the robot stopped half a body
-            # length short of it.  Overriding pts[0] with the real pose makes
-            # the first move re-join the planned path cleanly instead of
-            # translating the whole leg by the collect shortfall.
             pts = [tuple(cur_pos)] + [tuple(p) for p in pts[1:]]
 
-            # Front-intake collection: the intake sits in the middle of the
-            # front face, so the ball must end up JUST in front of the robot.
-            # Trim the planned path by half a body length of ARC length from the
-            # end, so the robot's CENTRE stops there and its NOSE lands on the
-            # ball — driving the centre onto the ball would shove it away.
-            # Walking back along the polyline (not just the last segment) keeps
-            # the nose on the ball even when the final hop is shorter than the
-            # half-length.  Pivot compensation in the move loop then lands the
-            # centre on this trimmed endpoint automatically — no post-hoc command
-            # surgery needed.  (Wire a LIFT_DOWN / intake command in right after
-            # this leg once collection is implemented.)
             if is_collect and half_len_px > 0:
                 remaining = half_len_px
                 while len(pts) >= 2:
@@ -636,11 +591,6 @@ class FieldPlanner:
                 if dist_px < self.GRID_SCALE:
                     continue
 
-                # Off-centre pivot compensation.  The robot rotates about a point
-                # L px behind its centre, so a turn swings the centre.  To still
-                # land the centre on the next waypoint, aim along
-                #   V = (waypoint - centre) + L * heading_unit
-                # and drive |V| - L.  With L = 0 this reduces to the old maths.
                 L = self.pivot_offset_px
                 hr = np.radians(heading)
                 vx = dx + L * np.cos(hr)
@@ -656,8 +606,6 @@ class FieldPlanner:
                 leg_cmds.append("FORWARD:{}".format(dist_mm))
 
             commands.extend(leg_cmds)
-            # The move loop lands the centre on pts[-1]; for a collect leg that
-            # is already the pulled-back nose-stop, so this is the real pose.
             cur_pos = pts[-1]
 
             if not is_collect and is_last_trip:
@@ -672,28 +620,30 @@ class FieldPlanner:
 
     def plan_trips(self, robot_pos, ball_positions, dropoff_pos,
                    capacity=6, initial_heading_deg=0, face_deg=None):
-        """
-        Capacity-aware multi-trip planner. Handles any number of balls.
-
-        - Balls are clustered into trips of ≤ capacity using K-Means++.
-        - The best cluster to do first (closest to robot_pos) is chosen by
-          trying all k candidates and picking the lowest total A* cost.
-        - Remaining trips all start and end at dropoff_pos; their internal
-          order is optimised independently by brute-force permutation (≤ capacity!).
-        - Heading is threaded across all trips so TURN commands are correct.
-
-        Returns a list of EV3 command strings ready to write to commands.txt.
-        """
+        """multi-trip planner"""
         meta = self._sim_metadata(robot_pos, dropoff_pos)
 
-        reachable = [bp for bp in ball_positions if not self._is_in_obstacle(*bp)]
-        skipped_balls = [bp for bp in ball_positions if self._is_in_obstacle(*bp)]
+        def _approach_reachable(bp):
+            bx, by = float(bp[0]), float(bp[1])
+            if not self._is_in_obstacle(bx, by):
+                return True
+            wall_dir = self._forced_approach_dir(bp)
+            if wall_dir is not None:
+                ux, uy = wall_dir
+                if not self._is_in_obstacle(bx - approach_px * ux, by - approach_px * uy):
+                    return True
+            for angle_deg in range(0, 360, 45):
+                rad = math.radians(angle_deg)
+                ux, uy = math.cos(rad), math.sin(rad)
+                if not self._is_in_obstacle(bx - approach_px * ux, by - approach_px * uy):
+                    return True
+            return False
+
+        reachable = [bp for bp in ball_positions if _approach_reachable(bp)]
+        skipped_balls = [bp for bp in ball_positions if not _approach_reachable(bp)]
         if skipped_balls:
-            print("Skipping {} ball(s) inside obstacles/walls.".format(len(skipped_balls)))
+            print("Skipping {} ball(s) with unreachable approach point.".format(len(skipped_balls)))
         ball_positions = reachable
-        # Expose the ACTUAL routed list + skipped balls so the overlay can label
-        # them correctly.  _debug_ball_order indexes into this reachable list,
-        # not the caller's original (which still includes the skipped balls).
         self._debug_ball_positions = ball_positions
         self._debug_skipped_balls = skipped_balls
 
@@ -717,7 +667,7 @@ class FieldPlanner:
         k = len(clusters)
         print("Planned {} trip(s) for {} balls (capacity {})".format(k, n, capacity))
 
-        # Precompute hole→cluster→hole routes for every cluster
+        # Precompute holetoclustertohole routes for every cluster
         hole_segs = []
         hole_ball_orders = []
         for cluster in clusters:
@@ -762,10 +712,7 @@ class FieldPlanner:
             face_deg=face_deg if k == 1 else None)
         commands += ["# Trip 1/{} – cluster {}".format(k, best_first)] + trip_cmds
 
-        # Remaining trips start from the hole.  debug_segs collects the ACTUAL
-        # driven polylines (trimmed to the nose-stops) so the overlay matches
-        # the commands, not the raw A* paths to the ball centres.
-        trip_num = 2
+        # Remaining trips start from the hole.
         debug_segs = list(driven)
         debug_order = list(best_first_order or [])
         for i in range(k):
@@ -786,23 +733,10 @@ class FieldPlanner:
         self._debug_ball_order = debug_order
         return commands
 
-    # ------------------------------------------------------------------
-    # Debug visualization
-    # ------------------------------------------------------------------
-
+    # DEBUG VISUAL
     def debug_overlay(self, frame, path_segs, robot_pos, ball_positions,
                       dropoff_pos, ball_order, skipped=None):
-        """Draw the planned route on a copy of frame for visual inspection.
-
-        path_segs are the ACTUAL driven polylines (trimmed to the nose-stops),
-        so collect legs end half a body length short of the ball centre — the
-        visible gap is exactly the front-intake reach.
-
-        ball_positions must be the REACHABLE list that ball_order indexes into.
-        skipped (optional) is the list of balls dropped as unreachable (inside
-        the wall/centre keep-out); they are drawn greyed-out so it's obvious the
-        route ignores them.
-        """
+        """draw the planned route on a copy of frame for visual inspection."""
         import cv2
         vis = frame.copy()
         colors = [(0, 255, 255), (255, 128, 0), (128, 0, 255)]
@@ -815,9 +749,6 @@ class FieldPlanner:
             color = colors[i % len(colors)]
             for j in range(1, len(seg)):
                 cv2.line(vis, _ipt(seg[j - 1]), _ipt(seg[j]), color, 2)
-            # Mark where the robot actually stops at the end of each leg.  Legs
-            # that end at the hole are the delivery legs; everything else is a
-            # collect leg whose endpoint is the nose-stop in front of a ball.
             if seg:
                 end = _ipt(seg[-1])
                 if abs(end[0] - dropoff_i[0]) > 12 or abs(end[1] - dropoff_i[1]) > 12:
@@ -825,7 +756,6 @@ class FieldPlanner:
                     cv2.putText(vis, "stop", (end[0] + 6, end[1] - 6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
 
-        # Obstacle grid overlay (thin)
         for gx in range(self.gw):
             for gy in range(self.gh):
                 if self.grid[gx][gy]:
@@ -837,8 +767,7 @@ class FieldPlanner:
         cv2.putText(vis, "START", (int(robot_pos[0]) + 10, int(robot_pos[1])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        # Skipped balls (unreachable) — greyed out so it's clear the route
-        # ignores them.  Drawn first so routed balls sit on top.
+        # Skipped balls
         for sx, sy in (skipped or []):
             sx, sy = int(sx), int(sy)
             cv2.circle(vis, (sx, sy), 6, (120, 120, 120), 1)

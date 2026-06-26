@@ -1,34 +1,40 @@
 #!/bin/bash
-# Restart script for EV3 follow-mode. Called by loop.py --profile/--tcp.
+# restart script; called over SSH by loop.py when it needs a mid-session restart.
+# THIS IS NOT THE ENTRY-POINT! run ev3_server.py on robot, then loop.py on host PC
 #
-# Kill only our own processes: pybricks-micropython and ev3_server.
-# Let brickrun exit naturally when its child (pybricks) dies.
-# Do NOT touch brickd, brickman, or other system processes.
+# kills only our processes (pybricks-micropython + ev3_server).
+# brickrun exits naturally once its child is gone.
+# don't touch brickd, brickman, or other system daemons.
 
-# Kill pybricks-micropython (our child process)
+# 1. kill pybricks
 PY_PID=$(ps -e -o pid,comm | awk '/pybricks-microp/{print $1}')
 [ -n "$PY_PID" ] && kill "$PY_PID" 2>/dev/null
 
-# Kill ev3_server (TCP bridge) via saved PID
+# 2. kill ev3_server via saved pid
 kill $(cat /tmp/ev3_server.pid 2>/dev/null) 2>/dev/null
 
-# Give brickrun 3s to exit after its child dies
-sleep 3
+# wait for pybricks to fully exit before brickrun starts a new one;
+# on a loaded EV3 the process may still hold port/gyro locks during kernel teardown.
+for i in $(seq 1 20); do
+    ps -e -o comm | grep -q pybricks-microp || break
+    sleep 0.5
+done
 
-# Reset IPC to known-clean state
+# give brickrun a moment to exit after its child is gone
+sleep 1
+
+# 3. reset IPC to a known-clean state
 echo "0 STOP" > /home/robot/cl_cmd.txt
 echo "0 DONE" > /home/robot/cl_ack.txt
-
-# Clear old log so stale "Follow loop ready" is not detected on restart
-rm -f /tmp/main.log
+rm -f /tmp/main.log  # wipe stale log so "Follow loop ready" isn't detected on restart
 
 cd /home/robot/CDIO-Mindstorms/robot
 
-# Start TCP bridge
+# 4. start TCP bridge
 nohup python3 ev3_server.py --tcp </dev/null >/tmp/ev3_server.log 2>&1 &
 echo $! > /tmp/ev3_server.pid
 sleep 2
 
-# Start pybricks (no -r: avoid hardware reset which can destabilize the brick)
+# 5. start pybricks
 nohup brickrun -r -- pybricks-micropython main.py --follow </dev/null >/tmp/main.log 2>&1 &
 echo "restart done"
